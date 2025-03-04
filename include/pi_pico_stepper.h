@@ -23,11 +23,20 @@
 #define WATCHDOG_TIMEOUT_MS 3000
 
 // SPI Configuration
+#define PIN_MISO 16
+#define PIN_CS   17
+#define PIN_SCK  18
+#define PIN_MOSI 19
+#define SPI_PORT spi0
 #define SPI_CLOCK_SPEED_HZ (500 * 1000)
 #define SPI_DATA_BITS 8
 #define SPI_MODE_POLARITY SPI_CPOL_0
 #define SPI_MODE_PHASE SPI_CPHA_1
 #define SPI_BIT_ORDER SPI_MSB_FIRST
+
+// LED Blink Configuration
+#define LED_PIN PICO_DEFAULT_LED_PIN
+#define BLINK_INTERVAL_MS 500
 
 // Motor Control Structure
 typedef struct {

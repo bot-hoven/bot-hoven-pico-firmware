@@ -1,3 +1,14 @@
+# Generated Cmake Pico project file
+
+cmake_minimum_required(VERSION 3.13)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Initialise pico_sdk from installed location
+# (note this can come from environment, CMake cache etc)
+
 # == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
 if(WIN32)
     set(USERHOME $ENV{USERPROFILE})
@@ -12,51 +23,57 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-# Generated Cmake Pico project file
-
-cmake_minimum_required(VERSION 3.13)
-
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# Initialise pico_sdk from installed location
-set(PICO_BOARD pico CACHE STRING "Board type")
+set(PICO_BOARD pico2 CACHE STRING "Board type")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
-project(pi_pico_stepper C CXX ASM)
+project(Pico_2_Stepper C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-# Add all source files
-add_executable(pi_pico_stepper 
-    src/pi_pico_stepper.c
+# Add executable. Default name is the project name, version 0.1
+
+add_executable(Pico_2_Stepper 
+    src/pico_2_stepper.c 
     src/spi_comm.c
 )
 
-# Project metadata
-pico_set_program_name(pi_pico_stepper "pi_pico_stepper")
-pico_set_program_version(pi_pico_stepper "0.1")
+pico_set_program_name(Pico_2_Stepper "Pico_2_Stepper")
+pico_set_program_version(Pico_2_Stepper "0.1")
 
-# Enable USB output, disable UART
-pico_enable_stdio_uart(pi_pico_stepper 0)
-pico_enable_stdio_usb(pi_pico_stepper 1)
+# no_flash means the target is to run from RAM
+pico_set_binary_type(Pico_2_Stepper no_flash)
 
-# Add required libraries
-target_link_libraries(pi_pico_stepper
-    pico_stdlib
-    hardware_spi
-    hardware_watchdog
+# # Generate PIO header
+# pico_generate_pio_header(Pico_2_Stepper ${CMAKE_CURRENT_LIST_DIR}/blink.pio)
+
+# Modify the below lines to enable/disable output over UART/USB
+pico_enable_stdio_uart(Pico_2_Stepper 0)
+pico_enable_stdio_usb(Pico_2_Stepper 1)
+
+# Add the standard library to the build
+target_link_libraries(Pico_2_Stepper
+        pico_stdlib)
+
+# Add the standard include files to the build
+target_include_directories(Pico_2_Stepper PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}
 )
 
-# Include directories
-target_include_directories(pi_pico_stepper PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}
-)
+# Add any user requested libraries
+target_link_libraries(Pico_2_Stepper 
+        hardware_spi
+        hardware_dma
+        hardware_pio
+        hardware_interp
+        hardware_timer
+        hardware_watchdog
+        hardware_clocks
+        hardware_irq
+        pico_stdlib
+        )
 
-# Add additional output formats
-pico_add_extra_outputs(pi_pico_stepper)
+pico_add_extra_outputs(Pico_2_Stepper)
 
