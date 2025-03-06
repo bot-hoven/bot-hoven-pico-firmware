@@ -19,7 +19,7 @@
 #define POSITION_FORMAT "%.3f"
 #define RESPONSE_SIZE 7
 #define BUFFER_SIZE 256
-#define POSITION_UPDATE_INTERVAL_US 10000
+#define POSITION_UPDATE_INTERVAL_US 10 * 1000
 #define WATCHDOG_TIMEOUT_MS 3000
 
 // SPI Configuration
@@ -36,12 +36,12 @@
 
 // LED Blink Configuration
 #define LED_PIN PICO_DEFAULT_LED_PIN
-#define BLINK_INTERVAL_MS 500
+#define BLINK_INTERVAL_US 500 * 1000
 
 // Motor Control Structure
 typedef struct {
-    volatile double current_position;
-    volatile double desired_position;
+    volatile double position_state;
+    volatile double position_command;
     const double resolution;
 } StepperMotor;
 
