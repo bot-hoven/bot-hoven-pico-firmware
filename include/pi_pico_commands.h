@@ -1,0 +1,11 @@
+#pragma once
+
+#define CALIBRATE 0x63
+#define COMMAND_POSITION 0x70
+#define STATE_POSITION 0x72
+#define ERROR 0x65
+#define NULL 0x00
+#define DUMMY 0xFF
+#define LEFT_STEPPER_MOTOR 0x6C
+#define RIGHT_STEPPER_MOTOR 0x72
+#define IS_VALID_MOTOR(m) ((m) == LEFT_STEPPER_MOTOR || (m) == RIGHT_STEPPER_MOTOR)
