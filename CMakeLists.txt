@@ -36,8 +36,10 @@ pico_sdk_init()
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(Pico_2_Stepper 
-    src/pico_2_stepper.c 
-    src/spi_comm.c
+    src/main.cpp
+    src/MotorController.cpp
+    src/SPIInterface.cpp
+    src/TrapezoidalStepper.cpp
 )
 
 pico_set_program_name(Pico_2_Stepper "Pico_2_Stepper")
@@ -65,9 +67,8 @@ target_include_directories(Pico_2_Stepper PRIVATE
 # Add any user requested libraries
 target_link_libraries(Pico_2_Stepper 
         hardware_spi
-        hardware_dma
         hardware_pio
-        hardware_interp
+        # hardware_interp
         hardware_timer
         hardware_watchdog
         hardware_clocks
