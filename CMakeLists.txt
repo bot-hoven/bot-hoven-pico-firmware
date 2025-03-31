@@ -49,7 +49,7 @@ pico_set_program_version(Pico_2_Stepper "0.1")
 # pico_generate_pio_header(Pico_2_Stepper ${CMAKE_CURRENT_LIST_DIR}/blink.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(Pico_2_Stepper 0)
+pico_enable_stdio_uart(Pico_2_Stepper 1)
 pico_enable_stdio_usb(Pico_2_Stepper 1)
 
 # Add the standard library to the build
@@ -70,6 +70,7 @@ target_link_libraries(Pico_2_Stepper
         hardware_watchdog
         hardware_clocks
         hardware_irq
+        pico_multicore
         pico_stdlib
         )
 
