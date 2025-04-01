@@ -14,7 +14,7 @@ int main() {
         controller.update();
         
         // Small delay to prevent tight looping
-        sleep_us(50);
+        // sleep_us(5000);
     }
     
     return 0;

@@ -26,7 +26,7 @@ public:
 private:
     // Hardware components
     TrapezoidalStepper left_stepper_;
-    TrapezoidalStepper right_stepper_;
+    // TrapezoidalStepper right_stepper_;
     SPIInterface spi_interface_;
     
     // Timing variables
@@ -44,5 +44,5 @@ private:
     float onPositionStateRequest(char motor);
     
     // Motor update function
-    void updateMotors();
+    void monitorMotors();
 };

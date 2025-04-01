@@ -4,22 +4,22 @@
 // Hardware Pin definitions - Left Stepper
 #define LEFT_PULSE_PIN 10
 #define LEFT_DIR_PIN 11
-#define LEFT_ENABLE_PIN -1
+#define LEFT_ENABLE_PIN 12
 #define LEFT_LIMIT_LEFT_PIN 2
 #define LEFT_LIMIT_RIGHT_PIN 3
 
 // Hardware Pin definitions - Right Stepper
-#define RIGHT_PULSE_PIN 12
-#define RIGHT_DIR_PIN 13
-#define RIGHT_ENABLE_PIN -1
+#define RIGHT_PULSE_PIN 6
+#define RIGHT_DIR_PIN 7
+#define RIGHT_ENABLE_PIN 8
 #define RIGHT_LIMIT_LEFT_PIN 4
 #define RIGHT_LIMIT_RIGHT_PIN 5
 
 // SPI Configuration
-#define PIN_MISO 16
+#define PIN_MISO 16 // THIS SHOULD BE OPPOSITE OF SCHEMATIC
 #define PIN_CS   17
 #define PIN_SCK  18
-#define PIN_MOSI 19
+#define PIN_MOSI 19 // THIS SHOULD BE OPPOSITE OF SCHEMATIC
 #define SPI_PORT spi0
 #define SPI_CLOCK_SPEED_HZ (500 * 1000)
 
@@ -44,12 +44,12 @@ MotorController::MotorController()
         INITIAL_STEPS_PER_METER,
         TOTAL_RAIL_LENGTH, LEFT_HAND_WIDTH, RIGHT_HAND_WIDTH, HOME_OFFSET
       ),
-      right_stepper_(
-        RIGHT_PULSE_PIN, RIGHT_DIR_PIN, RIGHT_ENABLE_PIN,
-        RIGHT_LIMIT_LEFT_PIN, RIGHT_LIMIT_RIGHT_PIN,
-        INITIAL_STEPS_PER_METER,
-        TOTAL_RAIL_LENGTH, LEFT_HAND_WIDTH, RIGHT_HAND_WIDTH, HOME_OFFSET
-      ),
+    //   right_stepper_(
+    //     RIGHT_PULSE_PIN, RIGHT_DIR_PIN, RIGHT_ENABLE_PIN,
+    //     RIGHT_LIMIT_LEFT_PIN, RIGHT_LIMIT_RIGHT_PIN,
+    //     INITIAL_STEPS_PER_METER,
+    //     TOTAL_RAIL_LENGTH, LEFT_HAND_WIDTH, RIGHT_HAND_WIDTH, HOME_OFFSET
+    //   ),
       spi_interface_(
         SPI_PORT, PIN_MISO, PIN_CS, PIN_SCK, PIN_MOSI, SPI_CLOCK_SPEED_HZ
       ),
@@ -61,10 +61,6 @@ void MotorController::init() {
     stdio_init_all();
     sleep_ms(2000); // Wait for serial connection to stabilize
     
-    printf("\n\n=======================================\n");
-    printf("Stepper Motor Controller with SPI Interface\n");
-    printf("=======================================\n\n");
-    
     // Initialize LED
     initLED();
     
@@ -73,9 +69,9 @@ void MotorController::init() {
     left_stepper_.setAcceleration(ACCELERATION);
     left_stepper_.setDeceleration(DECELERATION);
     
-    right_stepper_.setMaxVelocity(MAX_VELOCITY);
-    right_stepper_.setAcceleration(ACCELERATION);
-    right_stepper_.setDeceleration(DECELERATION);
+    // right_stepper_.setMaxVelocity(MAX_VELOCITY);
+    // right_stepper_.setAcceleration(ACCELERATION);
+    // right_stepper_.setDeceleration(DECELERATION);
     
     // Initialize SPI interface
     spi_interface_.init();
@@ -90,10 +86,10 @@ void MotorController::init() {
     });
     
     // Initialize timing variables
-    last_position_update_ = get_absolute_time();
+    // last_position_update_ = get_absolute_time();
     last_blink_ = get_absolute_time();
     
-    printf("Initialization complete. Ready to receive commands.\n");
+    // printf("Initialization complete. Ready to receive commands.\n");
 }
 
 void MotorController::update() {
@@ -101,11 +97,11 @@ void MotorController::update() {
     spi_interface_.processCommands();
 
     
-    // Update motors at a fixed rate
-    if (absolute_time_diff_us(last_position_update_, get_absolute_time()) > POSITION_UPDATE_INTERVAL_US) {
-        updateMotors();
-        last_position_update_ = get_absolute_time();
-    }
+    // Monitor motors at a fixed rate if desired.
+    // if (absolute_time_diff_us(last_position_update_, get_absolute_time()) > POSITION_UPDATE_INTERVAL_US) {
+    //     monitorMotors();
+    //     last_position_update_ = get_absolute_time();
+    // }
     
     // Update LED status (blink to show system is alive)
     updateLED();
@@ -126,36 +122,36 @@ void MotorController::updateLED() {
 }
 
 void MotorController::onCalibrationCommand() {
-    printf("Calibration command received. Calibrating both motors...\n");
+    // printf("Calibration command received. Calibrating both motors...\n");
     
     // Calibrate left stepper
-    printf("Calibrating left stepper...\n");
-    // if (!left_stepper_.calibrate()) {
-    //     printf("ERROR: Left stepper calibration failed: %s\n", left_stepper_.getErrorMessage());
-    //     return;
-    // }
+    // printf("Calibrating left stepper...\n");
+    if (!left_stepper_.calibrate()) {
+        printf("ERROR: Left stepper calibration failed: %s\n", left_stepper_.getErrorMessage());
+        return;
+    }
     
     // Calibrate right stepper
-    printf("Calibrating right stepper...\n");
+    // printf("Calibrating right stepper...\n");
     // if (!right_stepper_.calibrate()) {
     //     printf("ERROR: Right stepper calibration failed: %s\n", right_stepper_.getErrorMessage());
     //     return;
     // }
     
-    printf("Calibration complete for both motors.\n");
+    // printf("Calibration complete for both motors.\n");
 }
 
 bool MotorController::onPositionCommand(char motor, float position) {
     bool result = false;
     
     if (motor == 'l') {
-        printf("Moving left stepper to position %.3f\n", position);
-        // result = left_stepper_.moveTo(position);
-        // if (!result) {
-        //     printf("ERROR: Failed to move left stepper: %s\n", left_stepper_.getErrorMessage());
-        // }
+        // printf("Moving left stepper to position %.3f\n", position);
+        result = left_stepper_.moveTo(position);
+        if (!result) {
+            printf("ERROR: Failed to move left stepper: %s\n", left_stepper_.getErrorMessage());
+        }
     } else if (motor == 'r') {
-        printf("Moving right stepper to position %.3f\n", position);
+        // printf("Moving right stepper to position %.3f\n", position);
         // result = right_stepper_.moveTo(position);
         // if (!result) {
         //     printf("ERROR: Failed to move right stepper: %s\n", right_stepper_.getErrorMessage());
@@ -167,17 +163,14 @@ bool MotorController::onPositionCommand(char motor, float position) {
 
 float MotorController::onPositionStateRequest(char motor) {
     if (motor == 'l') {
-        // return 5.0f;
         return left_stepper_.getCurrentPosition();
     } else if (motor == 'r') {
-        // return 10.0f;
-        return right_stepper_.getCurrentPosition();
+        // return right_stepper_.getCurrentPosition();
     }
-    
     return 0.0f;
 }
 
-void MotorController::updateMotors() {
+void MotorController::monitorMotors() {
     // This function is intentionally left empty as the TrapezoidalStepper class
     // handles motion updates through its own alarm callbacks.
     // 

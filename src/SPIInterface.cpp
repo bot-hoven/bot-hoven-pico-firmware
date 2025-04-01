@@ -44,6 +44,9 @@ bool SPIInterface::dataAvailable() {
 }
 
 void SPIInterface::processCommands() {
+    // This function always deals with FIRST byte of message.
+    // Handlers process the rest.
+
     if (!dataAvailable()) {
         return;
     }
@@ -56,23 +59,18 @@ void SPIInterface::processCommands() {
         case CALIBRATE:
             handleCalibrationCommand();
             break;
-            
         case COMMAND_POSITION:
             handlePositionCommand();
             break;
-            
         case STATE_POSITION:
             handlePositionStateRequest();
             break;
-            
         case NULL_BYTE:
-            printf("Null-terminator received.\n");
+            // printf("Null-terminator received.\n");
             break;
-            
         case DUMMY:
-            printf("Dummy byte received.\n");
+            // printf("Dummy byte received.\n");
             break;
-            
         default:
             printf("Unknown command received: 0x%02x\n", command);
             break;
@@ -80,10 +78,10 @@ void SPIInterface::processCommands() {
 }
 
 void SPIInterface::handleCalibrationCommand() {
-    // Skip the motor identifier byte if present
+    // Skip the null
     spiReadByte();
     
-    printf("Calibration command received\n");
+    // printf("Calibration command received\n");
     
     // Call the callback if registered
     if (calibration_callback_) {
@@ -110,19 +108,20 @@ void SPIInterface::handlePositionCommand() {
     }
     
     // Null-terminate the received string
+    // This is for case when buffer size is reached.
     recv_buffer_[recv_index - 1] = '\0';
     
     // Parse the position
     float position;
     if (sscanf((char*)recv_buffer_, "%f", &position) == 1) {
-        printf("Position command: motor=%c, position=%.3f\n", motor, position);
+        // printf("Position command: motor=%c, position=%.3f\n", motor, position);
         
         // Call the callback if registered
         if (position_command_callback_) {
             position_command_callback_(static_cast<char>(motor), position);
         }
     } else {
-        printf("Failed to parse position value: %s\n", recv_buffer_);
+        // printf("Failed to parse position value: %s\n", recv_buffer_);
     }
 }
 
@@ -150,7 +149,7 @@ void SPIInterface::handlePositionStateRequest() {
     // Send the response with null terminator
     spiWriteBuffer(response_buffer_, written + 1);
     
-    printf("Position state response: motor=%c, position=%.3f\n", motor, position);
+    // printf("Position state response: motor=%c, position=%.3f\n", motor, position);
 }
 
 uint8_t SPIInterface::spiReadByte() {
