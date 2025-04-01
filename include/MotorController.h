@@ -42,6 +42,7 @@ private:
     void onCalibrationCommand();
     bool onPositionCommand(char motor, float position);
     float onPositionStateRequest(char motor);
+    bool onPidTuneCommand(char motor, float kp, float ki, float kd);
     
     // Motor update function
     void monitorMotors();

@@ -19,7 +19,8 @@ SPIInterface::SPIInterface(
     data_bits_(data_bits),
     calibration_callback_(nullptr),
     position_command_callback_(nullptr),
-    position_state_callback_(nullptr) {
+    position_state_callback_(nullptr),
+    pid_tune_callback_(nullptr) {
     
     // Initialize buffers
     memset(recv_buffer_, 0, BUFFER_SIZE);
@@ -64,6 +65,9 @@ void SPIInterface::processCommands() {
             break;
         case STATE_POSITION:
             handlePositionStateRequest();
+            break;
+        case PID_TUNE:
+            handlePidTuneCommand();
             break;
         case NULL_BYTE:
             // printf("Null-terminator received.\n");
@@ -152,6 +156,42 @@ void SPIInterface::handlePositionStateRequest() {
     // printf("Position state response: motor=%c, position=%.3f\n", motor, position);
 }
 
+void SPIInterface::handlePidTuneCommand() {
+    // Read the motor identifier (l or r)
+    uint8_t motor = spiReadByte();
+    
+    if (!IS_VALID_MOTOR(motor)) {
+        printf("Invalid motor identifier: 0x%02x\n", motor);
+        return;
+    }
+    
+    // Read the PID parameters until null terminator
+    uint8_t byte = 0xFF;
+    uint8_t recv_index = 0;
+    
+    while (byte != NULL_BYTE && recv_index < BUFFER_SIZE - 1) {
+        byte = spiReadByte();
+        recv_buffer_[recv_index++] = byte;
+    }
+    
+    // Null-terminate the received string
+    recv_buffer_[recv_index - 1] = '\0';
+    
+    // Parse the PID parameters (format: "kp,ki,kd")
+    float kp, ki, kd;
+    if (sscanf((char*)recv_buffer_, "%f,%f,%f", &kp, &ki, &kd) == 3) {
+        printf("PID tune command: motor=%c, kp=%.2f, ki=%.2f, kd=%.2f\n", 
+               static_cast<char>(motor), kp, ki, kd);
+        
+        // Call the callback if registered
+        if (pid_tune_callback_) {
+            pid_tune_callback_(static_cast<char>(motor), kp, ki, kd);
+        }
+    } else {
+        printf("Failed to parse PID parameters: %s\n", recv_buffer_);
+    }
+}
+
 uint8_t SPIInterface::spiReadByte() {
     uint8_t byte;
     spi_read_blocking(spi_port_, DUMMY, &byte, 1);
@@ -172,4 +212,8 @@ void SPIInterface::setPositionCommandCallback(PositionCommandCallback callback) 
 
 void SPIInterface::setPositionStateCallback(PositionStateCallback callback) {
     position_state_callback_ = callback;
+}
+
+void SPIInterface::setPidTuneCallback(PidTuneCallback callback) {
+    pid_tune_callback_ = callback;
 }

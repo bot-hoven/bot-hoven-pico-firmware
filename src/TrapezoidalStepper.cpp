@@ -15,6 +15,14 @@
 #define LEFT_PULSE_PIN 10
 #define RIGHT_PULSE_PIN 6
 
+// Default PID parameters
+#define DEFAULT_KP 0.75f  // Proportional gain
+#define DEFAULT_KI 0.0f      // Integral gain
+#define DEFAULT_KD 0.03f   // Derivative gain
+#define MIN_PID_OUTPUT 0.0f  // Minimum PID output (steps/second)
+#define MAX_ERROR_INTEGRAL 1000.0f // Maximum accumulated error
+#define MAX_POSITION_ERROR 0.001f  // Error threshold for position reached (1mm)
+
 // Static variable initialization
 TrapezoidalStepper* TrapezoidalStepper::left_instance = nullptr;
 TrapezoidalStepper* TrapezoidalStepper::right_instance = nullptr;
@@ -53,6 +61,12 @@ TrapezoidalStepper::TrapezoidalStepper(uint8_t pulsePin, uint8_t dirPin, int8_t 
       minPulseWidth(minPulseWidth), maxStepRate(maxStepRate),
       totalTravelMeters(0.0f), leftLimitPosition(0.0f), rightLimitPosition(0.0f), isCalibrated(false),
       maxVelocity(10000.0f), acceleration(20000.0f), deceleration(20000.0f),
+      // Initialize PID controller parameters
+      kp(DEFAULT_KP), ki(DEFAULT_KI), kd(DEFAULT_KD),
+      errorIntegral(0.0f), lastError(0.0f), lastErrorTime(0.0f),
+      minOutput(MIN_PID_OUTPUT), maxOutput(maxStepRate),
+      usePidControl(true), // Enable PID control by default
+      // Initialize state variables
       currentPosition(0.0f), targetPosition(0.0f),
       totalSteps(0), currentStep(0), absoluteStepPos(0),
       accelSteps(0), constVelSteps(0), decelSteps(0),
@@ -128,11 +142,11 @@ void TrapezoidalStepper::armTimerForNextStep(uint32_t delay_us) {
 }
 
 uint32_t TrapezoidalStepper::calculateStepInterval() {
-    /*
-    Compute timing between steps (i.e., usec/step) based on desired velocity.
-    Effectively what we're doing here is computing the new velocity based on
-    how far we've travelled so far, subject to our initial velocity and acceleration.
-    */
+    if (usePidControl) {
+        return calculatePidStepInterval();
+    }
+    
+    // Original trapezoidal profile logic
     float velocity = 0.0f;
     
     if (currentStep < accelSteps) {
@@ -185,10 +199,92 @@ uint32_t TrapezoidalStepper::calculateStepInterval() {
     return interval;
 }
 
-void TrapezoidalStepper::step() {
-    // Skip if we've already completed the move
-    if (currentStep >= totalSteps) {
+uint32_t TrapezoidalStepper::calculatePidStepInterval() {
+    // Calculate velocity using PID controller
+    float velocity = updatePid();
+    
+    // Save current velocity
+    currentVelocity = velocity;
+    
+    // Convert to time interval (microseconds)
+    uint32_t interval = static_cast<uint32_t>(1000000.0f / velocity);
+    
+    // Ensure interval is not too small based on driver specs
+    if (interval < minStepInterval) {
+        interval = minStepInterval;
+    }
+    
+    return interval;
+}
+
+float TrapezoidalStepper::updatePid() {
+    // Calculate error (in meters)
+    float error = targetPosition - currentPosition;
+    
+    // If error is very small, consider position reached
+    if (fabs(error) < MAX_POSITION_ERROR / stepsPerMeter) {
+        // If we're at the target position, stop moving
         isMoving = false;
+        return 0.0f; // Return zero velocity
+    }
+    
+    // Calculate time step since last update (in seconds)
+    uint64_t now = time_us_64();
+    float dt = (now - lastErrorTime) / 1000000.0f;
+    
+    // Prevent division by zero or very small dt
+    if (dt < 0.00001f) {
+        dt = 0.00001f;
+    }
+    
+    // Calculate derivative term (change in error over time)
+    float errorDerivative = (error - lastError) / dt;
+    
+    // Update integral term with anti-windup
+    errorIntegral += error * dt;
+    
+    // Limit integral term to prevent windup
+    if (errorIntegral > MAX_ERROR_INTEGRAL) {
+        errorIntegral = MAX_ERROR_INTEGRAL;
+    } else if (errorIntegral < -MAX_ERROR_INTEGRAL) {
+        errorIntegral = -MAX_ERROR_INTEGRAL;
+    }
+    
+    // PID formula
+    float output = kp * error + ki * errorIntegral + kd * errorDerivative;
+    
+    // Convert output from meters to steps per second
+    output *= stepsPerMeter;
+    
+    // Keep track of direction
+    bool newDirection = (output >= 0);
+    
+    // Use absolute value for velocity
+    output = fabs(output);
+    
+    // Clamp output to valid range
+    if (output < minOutput) {
+        output = minOutput;
+    } else if (output > maxOutput) {
+        output = maxOutput;
+    }
+    
+    // Update state for next iteration
+    lastError = error;
+    lastErrorTime = now;
+    
+    // Update direction if needed
+    if (direction != newDirection) {
+        direction = newDirection;
+        setDirection(direction);
+    }
+    
+    return output;
+}
+
+void TrapezoidalStepper::step() {
+    // If we're not supposed to be moving, don't step
+    if (!isMoving) {
         return;
     }
     
@@ -196,7 +292,15 @@ void TrapezoidalStepper::step() {
     generateStep();
     
     // Update position
-    currentStep++;
+    if (usePidControl) {
+        // In PID mode, we just update the step counter
+        // Don't increment currentStep, as we're not using it for trajectory planning
+    } else {
+        // In trapezoidal mode, increment the step counter
+        currentStep++;
+    }
+    
+    // Update absolute step position based on direction
     if (direction) {
         absoluteStepPos++;
     } else {
@@ -210,9 +314,15 @@ void TrapezoidalStepper::step() {
     lastStepTime = time_us_64();
     
     // Schedule next step if still moving
-    if (currentStep < totalSteps) {
+    if (usePidControl || currentStep < totalSteps) {
         uint32_t interval = calculateStepInterval();
-        armTimerForNextStep(interval);
+        
+        // If the interval is UINT32_MAX, movement is complete
+        if (interval == UINT32_MAX) {
+            isMoving = false;
+        } else {
+            armTimerForNextStep(interval);
+        }
     } else {
         isMoving = false;
     }
@@ -242,6 +352,9 @@ void TrapezoidalStepper::setError(const char* message) {
 void TrapezoidalStepper::setMaxVelocity(float velocity) {
     if (velocity > 0 && velocity <= maxStepRate) {
         maxVelocity = velocity;
+        
+        // Also update PID controller max output
+        maxOutput = velocity;
     }
 }
 
@@ -255,6 +368,35 @@ void TrapezoidalStepper::setDeceleration(float decel) {
     if (decel > 0) {
         deceleration = decel;
     }
+}
+
+void TrapezoidalStepper::setPidParameters(float p, float i, float d) {
+    // Update PID gains
+    kp = p;
+    ki = i;
+    kd = d;
+    
+    // Reset integral term when parameters change
+    errorIntegral = 0.0f;
+}
+
+void TrapezoidalStepper::enablePidControl(bool enable) {
+    // Only reset PID if we're changing modes
+    if (usePidControl != enable) {
+        usePidControl = enable;
+        
+        // Reset PID state when switching modes
+        if (enable) {
+            resetPid();
+        }
+    }
+}
+
+void TrapezoidalStepper::resetPid() {
+    // Reset PID controller state
+    errorIntegral = 0.0f;
+    lastError = 0.0f;
+    lastErrorTime = time_us_64();
 }
 
 void TrapezoidalStepper::enableMotor(bool enable) {
@@ -295,21 +437,52 @@ bool TrapezoidalStepper::moveTo(float position, float startVelocity) {
         }
     }
     
+    // Set new target
+    targetPosition = position;
+    
+    // If using PID control, handle differently
+    if (usePidControl) {
+        // Calculate movement parameters for PID control
+        float distance = targetPosition - currentPosition;
+        
+        // Update direction based on target position
+        bool newDirection = (distance >= 0);
+        
+        // If direction changed, set it
+        if (direction != newDirection) {
+            direction = newDirection;
+            setDirection(direction);
+        }
+        
+        // If we're not already moving and the distance is significant, start moving
+        if (!isMoving && fabs(distance) > MAX_POSITION_ERROR / stepsPerMeter) {
+            isMoving = true;
+            
+            // Reset PID state for new movement
+            resetPid();
+            
+            // Schedule first step
+            uint32_t interval = calculatePidStepInterval();
+            armTimerForNextStep(interval);
+        }
+        
+        return true;
+    }
+    
+    // Original trapezoidal profile logic for non-PID mode
+    
     // If already moving, cancel the current move
     if (isMoving) {
         isMoving = false;
     }
 
-    // Set new target
-    targetPosition = position;
-    
     // Calculate movement parameters
     float distance = targetPosition - currentPosition;
     direction = (distance >= 0);
     totalSteps = static_cast<int32_t>(fabs(distance) * stepsPerMeter);
     
     // If no movement needed, return
-    if (totalSteps == 0) return false;
+    if (totalSteps == 0) return true;
     
     // Set direction pin according to datasheet timing requirements
     setDirection(direction);
@@ -361,25 +534,29 @@ bool TrapezoidalStepper::moveTo(float position, float startVelocity) {
 void TrapezoidalStepper::stop() {
     if (!isMoving) return;
     
-    // Calculate steps needed to stop from current velocity
-    float stepsToStop = (currentVelocity * currentVelocity) / (2.0f * deceleration);
-    
-    // Calculate new target position
-    float stopDistance = stepsToStop / stepsPerMeter;
-    if (direction) {
-        targetPosition = currentPosition + stopDistance;
+    if (usePidControl) {
+        // In PID mode, just set target to current position
+        targetPosition = currentPosition;
     } else {
-        targetPosition = currentPosition - stopDistance;
+        // Original trapezoidal profile stopping logic
+        
+        // Calculate steps needed to stop from current velocity
+        float stepsToStop = (currentVelocity * currentVelocity) / (2.0f * deceleration);
+        
+        // Calculate new target position
+        float stopDistance = stepsToStop / stepsPerMeter;
+        if (direction) {
+            targetPosition = currentPosition + stopDistance;
+        } else {
+            targetPosition = currentPosition - stopDistance;
+        }
+        
+        // Set up a new move to the stop position
+        totalSteps = currentStep + static_cast<int32_t>(stepsToStop);
+        accelSteps = currentStep;  // No more acceleration
+        constVelSteps = 0;         // No constant velocity phase
+        decelSteps = static_cast<int32_t>(stepsToStop);
     }
-    
-    // Set up a new move to the stop position
-    totalSteps = currentStep + static_cast<int32_t>(stepsToStop);
-    accelSteps = currentStep;  // No more acceleration
-    constVelSteps = 0;         // No constant velocity phase
-    decelSteps = static_cast<int32_t>(stepsToStop);
-    
-    // The existing step() function will handle the deceleration
-    // No need to explicitly schedule the next step as it's already been scheduled
 }
 
 void TrapezoidalStepper::emergencyStop() {
@@ -404,6 +581,12 @@ long TrapezoidalStepper::moveToLimit(uint8_t limitSwitchPin, bool direction, flo
     float savedAcceleration = acceleration;
     float savedDeceleration = deceleration;
     
+    // Save PID control state
+    bool savedPidControl = usePidControl;
+    
+    // Disable PID for calibration
+    usePidControl = false;
+    
     // Set slower speed for limit approach
     float limitVelocity = maxVelocity * slowSpeed;
     float limitAccel = acceleration * slowSpeed;
@@ -420,6 +603,7 @@ long TrapezoidalStepper::moveToLimit(uint8_t limitSwitchPin, bool direction, flo
             setMaxVelocity(savedMaxVelocity);
             setAcceleration(savedAcceleration);
             setDeceleration(savedDeceleration);
+            usePidControl = savedPidControl;
             return -1;
         }
         
@@ -456,6 +640,7 @@ long TrapezoidalStepper::moveToLimit(uint8_t limitSwitchPin, bool direction, flo
             setMaxVelocity(savedMaxVelocity);
             setAcceleration(savedAcceleration);
             setDeceleration(savedDeceleration);
+            usePidControl = savedPidControl;
             return -1;
         }
         
@@ -470,12 +655,19 @@ long TrapezoidalStepper::moveToLimit(uint8_t limitSwitchPin, bool direction, flo
     setMaxVelocity(savedMaxVelocity);
     setAcceleration(savedAcceleration);
     setDeceleration(savedDeceleration);
+    usePidControl = savedPidControl;
     
     return steps;
 }
 
 bool TrapezoidalStepper::moveSteps(long numSteps, bool direction) {
     if (numSteps <= 0) return true; // Nothing to do
+    
+    // Save PID control state
+    bool savedPidControl = usePidControl;
+    
+    // Disable PID for direct step control
+    usePidControl = false;
     
     setDirection(direction);
     sleep_ms(5); // Allow time for direction change
@@ -496,12 +688,23 @@ bool TrapezoidalStepper::moveSteps(long numSteps, bool direction) {
     
     // Update position after steps
     updatePositionFromSteps();
+    
+    // Restore PID control state
+    usePidControl = savedPidControl;
+    
     return true;
 }
 
 bool TrapezoidalStepper::calibrate() {
+    // Save PID control state
+    bool savedPidControl = usePidControl;
+    
+    // Disable PID for calibration
+    usePidControl = false;
+    
     // 1. Move to the left limit switch
     if (moveToLimit(leftLimitPin, CCW) < 0) {
+        usePidControl = savedPidControl;
         return false; // Error already set in moveToLimit
     }
     
@@ -511,6 +714,7 @@ bool TrapezoidalStepper::calibrate() {
     // 2. Move to the right limit switch, counting steps
     long stepsToRight = moveToLimit(rightLimitPin, CW);
     if (stepsToRight < 0) {
+        usePidControl = savedPidControl;
         return false; // Error already set
     }
     
@@ -531,7 +735,17 @@ bool TrapezoidalStepper::calibrate() {
     isCalibrated = true;
     
     // 3. Perform homing
-    return homePosition();
+    bool result = homePosition();
+    
+    // Restore PID control state
+    usePidControl = savedPidControl;
+    
+    // Reset PID controller after calibration
+    if (usePidControl) {
+        resetPid();
+    }
+    
+    return result;
 }
 
 bool TrapezoidalStepper::homePosition() {
@@ -539,6 +753,12 @@ bool TrapezoidalStepper::homePosition() {
         setError("System not calibrated, cannot home");
         return false;
     }
+    
+    // Save PID control state
+    bool savedPidControl = usePidControl;
+    
+    // Disable PID for direct movement
+    usePidControl = false;
     
     // Calculate steps from current position to home position
     float railCenterMeters = totalRailLength / 2.0f;
@@ -549,6 +769,7 @@ bool TrapezoidalStepper::homePosition() {
     
     // Move to home position
     if (!moveSteps(abs(stepsToHome), direction)) {
+        usePidControl = savedPidControl;
         return false;
     }
     
@@ -560,6 +781,12 @@ bool TrapezoidalStepper::homePosition() {
     
     // Reset the update time to prevent large initial time deltas
     lastUpdateTime = get_absolute_time();
+    
+    // Reset PID controller state
+    resetPid();
+    
+    // Restore PID control state
+    usePidControl = savedPidControl;
     
     return true;
 }

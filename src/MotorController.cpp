@@ -37,6 +37,11 @@
 #define ACCELERATION 24000.0f
 #define DECELERATION 24000.0f
 
+// PID parameters for continuous position tracking
+#define PID_KP 0.75f  // Proportional gain
+#define PID_KI 0.0f      // Integral gain
+#define PID_KD 0.03f   // Derivative gain
+
 MotorController::MotorController() 
     : left_stepper_(
         LEFT_PULSE_PIN, LEFT_DIR_PIN, LEFT_ENABLE_PIN,
@@ -69,9 +74,15 @@ void MotorController::init() {
     left_stepper_.setAcceleration(ACCELERATION);
     left_stepper_.setDeceleration(DECELERATION);
     
+    // Configure PID controller
+    left_stepper_.setPidParameters(PID_KP, PID_KI, PID_KD);
+    left_stepper_.enablePidControl(true);
+    
     // right_stepper_.setMaxVelocity(MAX_VELOCITY);
     // right_stepper_.setAcceleration(ACCELERATION);
     // right_stepper_.setDeceleration(DECELERATION);
+    // right_stepper_.setPidParameters(PID_KP, PID_KI, PID_KD);
+    // right_stepper_.enablePidControl(true);
     
     // Initialize SPI interface
     spi_interface_.init();
@@ -84,12 +95,15 @@ void MotorController::init() {
     spi_interface_.setPositionStateCallback([this](char motor) {
         return this->onPositionStateRequest(motor);
     });
+    spi_interface_.setPidTuneCallback([this](char motor, float kp, float ki, float kd) {
+        return this->onPidTuneCommand(motor, kp, ki, kd);
+    });
     
     // Initialize timing variables
     // last_position_update_ = get_absolute_time();
     last_blink_ = get_absolute_time();
     
-    // printf("Initialization complete. Ready to receive commands.\n");
+    printf("Initialization complete. Ready to receive commands.\n");
 }
 
 void MotorController::update() {
@@ -122,10 +136,10 @@ void MotorController::updateLED() {
 }
 
 void MotorController::onCalibrationCommand() {
-    // printf("Calibration command received. Calibrating both motors...\n");
+    printf("Calibration command received. Calibrating both motors...\n");
     
     // Calibrate left stepper
-    // printf("Calibrating left stepper...\n");
+    printf("Calibrating left stepper...\n");
     if (!left_stepper_.calibrate()) {
         printf("ERROR: Left stepper calibration failed: %s\n", left_stepper_.getErrorMessage());
         return;
@@ -138,14 +152,14 @@ void MotorController::onCalibrationCommand() {
     //     return;
     // }
     
-    // printf("Calibration complete for both motors.\n");
+    printf("Calibration complete for both motors.\n");
 }
 
 bool MotorController::onPositionCommand(char motor, float position) {
     bool result = false;
     
     if (motor == 'l') {
-        // printf("Moving left stepper to position %.3f\n", position);
+        printf("Moving left stepper to position %.3f\n", position);
         result = left_stepper_.moveTo(position);
         if (!result) {
             printf("ERROR: Failed to move left stepper: %s\n", left_stepper_.getErrorMessage());
@@ -168,6 +182,22 @@ float MotorController::onPositionStateRequest(char motor) {
         // return right_stepper_.getCurrentPosition();
     }
     return 0.0f;
+}
+
+bool MotorController::onPidTuneCommand(char motor, float kp, float ki, float kd) {
+    bool result = false;
+    
+    if (motor == 'l') {
+        // printf("Setting PID parameters for left stepper: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", kp, ki, kd);
+        left_stepper_.setPidParameters(kp, ki, kd);
+        result = true;
+    } else if (motor == 'r') {
+        // printf("Setting PID parameters for right stepper: Kp=%.2f, Ki=%.2f, Kd=%.2f\n", kp, ki, kd);
+        // right_stepper_.setPidParameters(kp, ki, kd);
+        // result = true;
+    }
+    
+    return result;
 }
 
 void MotorController::monitorMotors() {

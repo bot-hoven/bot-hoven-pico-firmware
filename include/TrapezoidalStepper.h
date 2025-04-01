@@ -1,6 +1,6 @@
 /**
  * TrapezoidalStepper.h
- * A class for controlling stepper motors with a trapezoidal velocity profile
+ * A class for controlling stepper motors with a PID controller for velocity
  * using the CL42T(V4.1) Closed Loop Stepper Driver.
  */
 
@@ -44,6 +44,17 @@
      float acceleration;         // Acceleration in steps/second^2
      float deceleration;         // Deceleration in steps/second^2
      
+     // PID controller parameters
+     float kp;                   // Proportional gain
+     float ki;                   // Integral gain
+     float kd;                   // Derivative gain
+     float errorIntegral;        // Accumulated error (for integral term)
+     float lastError;            // Previous error (for derivative term)
+     float lastErrorTime;        // Time of last error calculation (microseconds)
+     float minOutput;            // Minimum PID output (steps/second)
+     float maxOutput;            // Maximum PID output (steps/second)
+     bool usePidControl;         // Flag to enable/disable PID control
+     
      // State variables
      float currentPosition;      // Current position in meters
      float targetPosition;       // Target position in meters
@@ -70,6 +81,18 @@
       * @return Step interval in microseconds
       */
      uint32_t calculateStepInterval();
+ 
+     /**
+      * Calculate the step interval using PID control
+      * @return Step interval in microseconds
+      */
+     uint32_t calculatePidStepInterval();
+ 
+     /**
+      * Update the PID controller
+      * @return Velocity in steps/second
+      */
+     float updatePid();
  
      /**
       * Set error message
@@ -134,7 +157,7 @@
                       uint8_t leftLimitPin, uint8_t rightLimitPin,
                       uint32_t stepsPerMeter,
                       float totalRailLength, float leftHandWidth, float rightHandWidth, float homeOffset,
-                      uint32_t maxStepRate = 50000, uint32_t minPulseWidth = 4);
+                      uint32_t maxStepRate = 50000, uint32_t minPulseWidth = 2);
      
      /**
       * Destructor to clean up IRQ handlers
@@ -163,6 +186,25 @@
       * @param decel Deceleration in steps/second^2
       */
      void setDeceleration(float decel);
+ 
+     /**
+      * Set PID controller parameters
+      * @param p Proportional gain
+      * @param i Integral gain
+      * @param d Derivative gain
+      */
+     void setPidParameters(float p, float i, float d);
+ 
+     /**
+      * Enable or disable PID control
+      * @param enable True to enable PID control, false to use trapezoidal profile
+      */
+     void enablePidControl(bool enable);
+ 
+     /**
+      * Reset the PID controller state
+      */
+     void resetPid();
  
      /**
       * Enable or disable the motor
@@ -195,7 +237,7 @@
      void setCurrentPosition(float position);
  
      /**
-      * Move to a specific position with trapezoidal velocity profile
+      * Move to a specific position with PID control or trapezoidal velocity profile
       * @param position Target position in meters
       * @param startVelocity Initial velocity in steps/second (default 0)
       * @return False if move wasn't started, true otherwise

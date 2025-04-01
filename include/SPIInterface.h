@@ -9,6 +9,7 @@
 #define CALIBRATE 0x63       // 'c'
 #define COMMAND_POSITION 0x70 // 'p'
 #define STATE_POSITION 0x72  // 'r'
+#define PID_TUNE 0x74        // 't' for tune
 #define ERROR 0x65           // 'e'
 #define NULL_BYTE 0x00
 #define DUMMY 0xFF
@@ -45,11 +46,13 @@ public:
     using CalibrationCallback = std::function<void()>;
     using PositionCommandCallback = std::function<bool(char motor, float position)>;
     using PositionStateCallback = std::function<float(char motor)>;
+    using PidTuneCallback = std::function<bool(char motor, float kp, float ki, float kd)>;
     
     // Set callbacks for various commands
     void setCalibrationCallback(CalibrationCallback callback);
     void setPositionCommandCallback(PositionCommandCallback callback);
     void setPositionStateCallback(PositionStateCallback callback);
+    void setPidTuneCallback(PidTuneCallback callback);
     
 private:
     // SPI configuration
@@ -70,11 +73,13 @@ private:
     void handleCalibrationCommand();
     void handlePositionCommand();
     void handlePositionStateRequest();
+    void handlePidTuneCommand();
     
     // Callbacks for processing commands
     CalibrationCallback calibration_callback_;
     PositionCommandCallback position_command_callback_;
     PositionStateCallback position_state_callback_;
+    PidTuneCallback pid_tune_callback_;
     
     // SPI utility functions
     uint8_t spiReadByte();
