@@ -2,12 +2,42 @@
 #include <cmath>
 #include <cstring>
 #include <stdio.h>
+#include "hardware/irq.h"
+#include "hardware/timer.h"
 
-// Static alarm callback function
-static int64_t stepper_alarm_callback(alarm_id_t id, void *user_data) {
-    TrapezoidalStepper *stepper = static_cast<TrapezoidalStepper*>(user_data);
-    stepper->step();
-    return 0;  // One-shot timer
+// Define timer IRQs and alarms
+#define LEFT_STEPPER_ALARM_NUM 2  // Use timer alarm 2 for left stepper (leaving 0/1 for SDK)
+#define RIGHT_STEPPER_ALARM_NUM 3 // Use timer alarm 3 for right stepper
+#define TIMER_IRQ_2 TIMER0_IRQ_2
+#define TIMER_IRQ_3 TIMER0_IRQ_3
+
+// Pin definitions from MotorController.cpp for use in constructor
+#define LEFT_PULSE_PIN 10
+#define RIGHT_PULSE_PIN 6
+
+// Static variable initialization
+TrapezoidalStepper* TrapezoidalStepper::left_instance = nullptr;
+TrapezoidalStepper* TrapezoidalStepper::right_instance = nullptr;
+
+// IRQ handlers for left and right steppers
+void left_stepper_irq(void) {
+    // Clear the interrupt
+    hw_clear_bits(&timer_hw->intr, 1u << LEFT_STEPPER_ALARM_NUM);
+    
+    // Call step on the left instance
+    if (TrapezoidalStepper::left_instance != nullptr) {
+        TrapezoidalStepper::left_instance->step();
+    }
+}
+
+void right_stepper_irq(void) {
+    // Clear the interrupt
+    hw_clear_bits(&timer_hw->intr, 1u << RIGHT_STEPPER_ALARM_NUM);
+    
+    // Call step on the right instance
+    if (TrapezoidalStepper::right_instance != nullptr) {
+        TrapezoidalStepper::right_instance->step();
+    }
 }
 
 TrapezoidalStepper::TrapezoidalStepper(uint8_t pulsePin, uint8_t dirPin, int8_t enablePin,
@@ -26,7 +56,7 @@ TrapezoidalStepper::TrapezoidalStepper(uint8_t pulsePin, uint8_t dirPin, int8_t 
       currentPosition(0.0f), targetPosition(0.0f),
       totalSteps(0), currentStep(0), absoluteStepPos(0),
       accelSteps(0), constVelSteps(0), decelSteps(0),
-      direction(true), isMoving(false), alarmId(0),
+      direction(true), isMoving(false),
       lastStepTime(0), minStepInterval(1000000 / maxStepRate),
       currentVelocity(0.0f), entryVelocity(0.0f), highestVelocity(0.0f) {
     
@@ -56,6 +86,45 @@ TrapezoidalStepper::TrapezoidalStepper(uint8_t pulsePin, uint8_t dirPin, int8_t 
     
     // Initialize timing
     lastUpdateTime = get_absolute_time();
+    
+    // Setup hardware timer IRQ based on which stepper this is
+    if (pulsePin == LEFT_PULSE_PIN) {
+        left_instance = this;
+        
+        // Setup IRQ handler for left stepper
+        hw_set_bits(&timer_hw->inte, 1u << LEFT_STEPPER_ALARM_NUM);
+        irq_set_exclusive_handler(TIMER_IRQ_2, left_stepper_irq);
+        irq_set_enabled(TIMER_IRQ_2, true);
+    } else if (pulsePin == RIGHT_PULSE_PIN) {
+        right_instance = this;
+        
+        // Setup IRQ handler for right stepper
+        hw_set_bits(&timer_hw->inte, 1u << RIGHT_STEPPER_ALARM_NUM);
+        irq_set_exclusive_handler(TIMER_IRQ_3, right_stepper_irq);
+        irq_set_enabled(TIMER_IRQ_3, true);
+    }
+}
+
+// Destructor to clean up IRQ handlers
+TrapezoidalStepper::~TrapezoidalStepper() {
+    // Disable IRQ and clear instance pointer
+    if (this == left_instance) {
+        hw_clear_bits(&timer_hw->inte, 1u << LEFT_STEPPER_ALARM_NUM);
+        left_instance = nullptr;
+    } else if (this == right_instance) {
+        hw_clear_bits(&timer_hw->inte, 1u << RIGHT_STEPPER_ALARM_NUM);
+        right_instance = nullptr;
+    }
+}
+
+void TrapezoidalStepper::armTimerForNextStep(uint32_t delay_us) {
+    uint64_t target = timer_hw->timerawl + delay_us;
+    
+    if (this == left_instance) {
+        timer_hw->alarm[LEFT_STEPPER_ALARM_NUM] = (uint32_t) target;
+    } else if (this == right_instance) {
+        timer_hw->alarm[RIGHT_STEPPER_ALARM_NUM] = (uint32_t) target;
+    }
 }
 
 uint32_t TrapezoidalStepper::calculateStepInterval() {
@@ -142,8 +211,8 @@ void TrapezoidalStepper::step() {
     
     // Schedule next step if still moving
     if (currentStep < totalSteps) {
-        uint32_t interval = calculateStepInterval(); // get time between pulse just sent and the next one
-        alarmId = add_alarm_in_us(interval, stepper_alarm_callback, this, true);
+        uint32_t interval = calculateStepInterval();
+        armTimerForNextStep(interval);
     } else {
         isMoving = false;
     }
@@ -228,7 +297,6 @@ bool TrapezoidalStepper::moveTo(float position, float startVelocity) {
     
     // If already moving, cancel the current move
     if (isMoving) {
-        cancel_alarm(alarmId);
         isMoving = false;
     }
 
@@ -250,28 +318,15 @@ bool TrapezoidalStepper::moveTo(float position, float startVelocity) {
     entryVelocity = fmin(startVelocity, maxVelocity);
     
     // Calculate motion profile
-    
-    // Steps needed to accelerate from entryVelocity to maxVelocity
-    // d_acc = (v_max^2 - vo^2) / 2a_acc
     float accelDistance = (maxVelocity * maxVelocity - entryVelocity * entryVelocity) / (2.0f * acceleration);
     accelSteps = static_cast<int32_t>(accelDistance + 0.5f);
     
-    // Steps needed to decelerate from maxVelocity to zero
-    // d_dec = v_max^2 / 2a_dec
     float decelDistance = (maxVelocity * maxVelocity) / (2.0f * deceleration);
     decelSteps = static_cast<int32_t>(decelDistance + 0.5f);
-
-    // printf("Total steps: %d\n", totalSteps);
-    // printf("Sum steps: %d\tAccel Steps: %d\tDecel Steps:%d\n", accelSteps+decelSteps, accelSteps, decelSteps);
-    // printf("\n");
     
     // Check if we can reach max velocity
     if (accelSteps + decelSteps > totalSteps) {
         // Triangular profile - calculate crossover point
-        
-        // Find peak velocity we can reach before we need to start decelerating
-        // Below equation comes from D_total = d_acc + d_dec (then solve for v_peak)
-        // v_peak = sqrt[ (vo^2*a_dec + 2*a_acc*a_dec*dist) / (a_acc + a_dec) ]
         float peakVelocity = sqrt(
             (entryVelocity * entryVelocity * deceleration + 
              2.0f * acceleration * deceleration * totalSteps) / 
@@ -296,18 +351,15 @@ bool TrapezoidalStepper::moveTo(float position, float startVelocity) {
     isMoving = true;
     lastStepTime = time_us_64();
     
-    // Schedule first step
+    // Schedule first step using hardware timer
     uint32_t interval = calculateStepInterval();
-    alarmId = add_alarm_in_us(interval, stepper_alarm_callback, this, true);
+    armTimerForNextStep(interval);
     
     return true;
 }
 
 void TrapezoidalStepper::stop() {
     if (!isMoving) return;
-    
-    // Cancel the current alarm
-    cancel_alarm(alarmId);
     
     // Calculate steps needed to stop from current velocity
     float stepsToStop = (currentVelocity * currentVelocity) / (2.0f * deceleration);
@@ -326,16 +378,16 @@ void TrapezoidalStepper::stop() {
     constVelSteps = 0;         // No constant velocity phase
     decelSteps = static_cast<int32_t>(stepsToStop);
     
-    // Schedule next step
-    uint32_t interval = calculateStepInterval();
-    alarmId = add_alarm_in_us(interval, stepper_alarm_callback, this, true);
+    // The existing step() function will handle the deceleration
+    // No need to explicitly schedule the next step as it's already been scheduled
 }
 
 void TrapezoidalStepper::emergencyStop() {
-    if (isMoving) {
-        cancel_alarm(alarmId);
-        isMoving = false;
-    }
+    if (!isMoving) return;
+    
+    // Immediately stop by setting isMoving to false
+    // The step() function will check this and not schedule new steps
+    isMoving = false;
 }
 
 const char* TrapezoidalStepper::getErrorMessage() const {
@@ -347,9 +399,6 @@ bool TrapezoidalStepper::getIsCalibrated() const {
 }
 
 long TrapezoidalStepper::moveToLimit(uint8_t limitSwitchPin, bool direction, float slowSpeed) {
-    // // printf("Moving to limit switch %u in direction %s\n", 
-        //    limitSwitchPin, direction == CCW ? "CCW (left)" : "CW (right)");
-    
     // Save current settings
     float savedMaxVelocity = maxVelocity;
     float savedAcceleration = acceleration;
@@ -364,8 +413,6 @@ long TrapezoidalStepper::moveToLimit(uint8_t limitSwitchPin, bool direction, flo
     
     // Make sure we're not already at the limit
     if (gpio_get(limitSwitchPin) == 1) { // Switches are active HIGH
-        // // printf("Already at limit switch, moving away slightly\n");
-        
         // Move away from the switch first (opposite direction)
         long backoffSteps = 100;
         if (!moveSteps(backoffSteps, !direction)) {
@@ -424,15 +471,11 @@ long TrapezoidalStepper::moveToLimit(uint8_t limitSwitchPin, bool direction, flo
     setAcceleration(savedAcceleration);
     setDeceleration(savedDeceleration);
     
-    // // printf("Reached limit switch after %ld steps\n", steps);
     return steps;
 }
 
 bool TrapezoidalStepper::moveSteps(long numSteps, bool direction) {
     if (numSteps <= 0) return true; // Nothing to do
-    
-    // printf("Moving %ld steps in direction %s\n", 
-        //    numSteps, direction == CCW ? "CCW (left)" : "CW (right)");
     
     setDirection(direction);
     sleep_ms(5); // Allow time for direction change
@@ -457,8 +500,6 @@ bool TrapezoidalStepper::moveSteps(long numSteps, bool direction) {
 }
 
 bool TrapezoidalStepper::calibrate() {
-    // printf("Starting calibration sequence\n");
-    
     // 1. Move to the left limit switch
     if (moveToLimit(leftLimitPin, CCW) < 0) {
         return false; // Error already set in moveToLimit
@@ -466,12 +507,6 @@ bool TrapezoidalStepper::calibrate() {
     
     // Reset step counter at left limit
     absoluteStepPos = 0;
-    // printf("Left limit reached. Step counter reset to 0.\n");
-    
-    // Move slightly away from the switch to ensure it's not triggered
-    // if (!moveSteps(100, CW)) {
-    //     return false;
-    // }
     
     // 2. Move to the right limit switch, counting steps
     long stepsToRight = moveToLimit(rightLimitPin, CW);
@@ -486,18 +521,11 @@ bool TrapezoidalStepper::calibrate() {
     totalTravelMeters = totalRailLength - leftHandWidth - rightHandWidth; // tracks centre of hand
     stepsPerMeter = static_cast<uint32_t>(stepsToRight / totalTravelMeters);
     
-    // printf("Calibration complete. Total travel: %.3f meters, %.6f meters per step (%u steps/m)\n",
-        //    totalTravelMeters, 1.0f/stepsPerMeter, stepsPerMeter);
-    
     // Calculate limit positions relative to homed position
     // Use totalRailLength for calculating the center of the rail
     float railCenterMeters = totalRailLength / 2.0f;
     leftLimitPosition = -railCenterMeters + leftHandWidth/2.0f - homeOffset;
     rightLimitPosition = (railCenterMeters - rightHandWidth - leftHandWidth/2.0f) - homeOffset;
-    // rightLimitPosition = (railCenterMeters - rightHandWidth/2.0f) - homeOffset; // TODO: need to consider that limit is between lh and rh (above line does this)
-    
-    // printf("Limit positions: Left=%.3f m, Right=%.3f m (relative to home)\n",
-        //    leftLimitPosition, rightLimitPosition);
     
     // Set calibration flag
     isCalibrated = true;
@@ -511,8 +539,6 @@ bool TrapezoidalStepper::homePosition() {
         setError("System not calibrated, cannot home");
         return false;
     }
-    
-    // printf("Homing to position at offset %.3f m from center\n", homeOffset);
     
     // Calculate steps from current position to home position
     float railCenterMeters = totalRailLength / 2.0f;
@@ -535,7 +561,6 @@ bool TrapezoidalStepper::homePosition() {
     // Reset the update time to prevent large initial time deltas
     lastUpdateTime = get_absolute_time();
     
-    // printf("Homing complete. Current position set to 0.0 meters\n");
     return true;
 }
 

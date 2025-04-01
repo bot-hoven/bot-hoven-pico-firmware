@@ -9,10 +9,11 @@
  #include "pico/stdlib.h"
  #include "hardware/timer.h"
  #include "hardware/gpio.h"
+ #include "hardware/irq.h"
  
- // Forward declaration for alarm callback
- class TrapezoidalStepper;
- static int64_t stepper_alarm_callback(alarm_id_t id, void *user_data);
+ // Forward declarations for IRQ handlers
+ void left_stepper_irq(void);
+ void right_stepper_irq(void);
  
  class TrapezoidalStepper {
  private:
@@ -54,7 +55,6 @@
      int32_t decelSteps;         // Number of steps in deceleration phase
      bool direction;             // Movement direction (true = CW, false = CCW)
      bool isMoving;              // Flag indicating if the motor is currently moving
-     alarm_id_t alarmId;         // ID of the current alarm
      char errorMessage[100];     // Error message buffer
      
      // Timing variables
@@ -71,11 +71,6 @@
       */
      uint32_t calculateStepInterval();
  
-     /**
-      * Perform a single step
-      */
-     void step();
-     
      /**
       * Set error message
       * @param message Error message to set
@@ -97,11 +92,22 @@
       * Update the position value based on steps taken
       */
      void updatePositionFromSteps();
+     
+     /**
+      * Arm the hardware timer for the next step
+      * @param delay_us Delay in microseconds until the next step
+      */
+     void armTimerForNextStep(uint32_t delay_us);
  
-     // Friend function to allow the alarm callback to access private methods
-     friend int64_t stepper_alarm_callback(alarm_id_t id, void *user_data);
+     // Friend declarations for IRQ handlers
+     friend void left_stepper_irq(void);
+     friend void right_stepper_irq(void);
  
  public:
+     // Static instances for IRQ handler access
+     static TrapezoidalStepper* left_instance;
+     static TrapezoidalStepper* right_instance;
+ 
      // Direction constants
      static const bool CW = true;    // Clockwise direction
      static const bool CCW = false;  // Counter-clockwise direction
@@ -125,10 +131,20 @@
       * @param minPulseWidth Minimum pulse width in microseconds (default 2)
       */
      TrapezoidalStepper(uint8_t pulsePin, uint8_t dirPin, int8_t enablePin,
-                       uint8_t leftLimitPin, uint8_t rightLimitPin,
-                       uint32_t stepsPerMeter,
-                       float totalRailLength, float leftHandWidth, float rightHandWidth, float homeOffset,
-                       uint32_t maxStepRate = 50000, uint32_t minPulseWidth = 2);
+                      uint8_t leftLimitPin, uint8_t rightLimitPin,
+                      uint32_t stepsPerMeter,
+                      float totalRailLength, float leftHandWidth, float rightHandWidth, float homeOffset,
+                      uint32_t maxStepRate = 50000, uint32_t minPulseWidth = 4);
+     
+     /**
+      * Destructor to clean up IRQ handlers
+      */
+     ~TrapezoidalStepper();
+ 
+     /**
+      * Perform a single step - called from IRQ handler
+      */
+     void step();
  
      /**
       * Set the maximum velocity

@@ -65,7 +65,7 @@ target_include_directories(Pico_2_Stepper PRIVATE
 target_link_libraries(Pico_2_Stepper 
         hardware_spi
         hardware_pio
-        # hardware_interp
+        hardware_interp
         hardware_timer
         hardware_watchdog
         hardware_clocks
