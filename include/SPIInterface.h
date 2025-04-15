@@ -38,12 +38,14 @@ public:
     
     // Process incoming commands (call this regularly from main loop)
     void processCommands();
+
+    void setErrorFlag(bool error_state);
     
     // Response formatting
     static const int POSITION_BUFFER_SIZE = 32;
     
     // Callback function types
-    using CalibrationCallback = std::function<void()>;
+    using CalibrationCallback = std::function<bool()>;
     using PositionCommandCallback = std::function<bool(char motor, float position)>;
     using PositionStateCallback = std::function<float(char motor)>;
     using PidTuneCallback = std::function<bool(char motor, float kp, float ki, float kd)>;
@@ -63,6 +65,7 @@ private:
     uint8_t mosi_pin_;
     uint32_t clock_speed_hz_;
     uint8_t data_bits_;
+    bool error_flag_;
     
     // Buffers
     static const int BUFFER_SIZE = 256;

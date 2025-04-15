@@ -25,6 +25,7 @@ SPIInterface::SPIInterface(
     // Initialize buffers
     memset(recv_buffer_, 0, BUFFER_SIZE);
     memset(response_buffer_, 0, POSITION_BUFFER_SIZE);
+    error_flag_ = false;
 }
 
 void SPIInterface::init() {
@@ -44,9 +45,25 @@ bool SPIInterface::dataAvailable() {
     return spi_is_readable(spi_port_);
 }
 
+void SPIInterface::setErrorFlag(bool error_state) {
+    error_flag_ = error_state;
+}
+
 void SPIInterface::processCommands() {
     // This function always deals with FIRST byte of message.
     // Handlers process the rest.
+        // If in error state, return error for any command
+        if (error_flag_) {
+            // Check if data is available to respond with error
+            if (dataAvailable()) {
+                // Read the command byte (but ignore it)
+                uint8_t command = spiReadByte();
+                
+                // Send error response
+                spiWriteBuffer("e", 2); // "e" + null terminator
+            }
+            return;
+        }
 
     if (!dataAvailable()) {
         return;
@@ -82,14 +99,34 @@ void SPIInterface::processCommands() {
 }
 
 void SPIInterface::handleCalibrationCommand() {
+    // // Skip the null
+    // spiReadByte();
+    
+    // // printf("Calibration command received\n");
+    
+    // // Call the callback if registered
+    // if (calibration_callback_) {
+    //     calibration_callback_();
+    // }
+
     // Skip the null
     spiReadByte();
     
-    // printf("Calibration command received\n");
-    
-    // Call the callback if registered
+    // Check calibration status and respond
+    bool isCalibrated = false;
     if (calibration_callback_) {
-        calibration_callback_();
+        isCalibrated = calibration_callback_();
+    }
+    
+    if (isCalibrated) {
+        // Send 'c' + null terminator to indicate calibration complete
+        char calibrated_response[2] = {'c', '\0'};
+        spiWriteBuffer(calibrated_response, 2);
+        printf("Sending calibration complete response\n");
+    } else {
+        // Send dummy byte to indicate in progress
+        uint8_t response = DUMMY;
+        spi_write_blocking(spi_port_, &response, 1);
     }
 }
 
