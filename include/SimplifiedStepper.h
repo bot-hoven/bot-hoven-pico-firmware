@@ -264,18 +264,6 @@ public:
     bool moveSteps(long numSteps, bool direction);
     
     /**
-     * Calibrate the system using limit switches
-     * @return True if calibration was successful, false otherwise
-     */
-    bool calibrate();
-    
-    /**
-     * Home the system to the defined home position
-     * @return True if homing was successful, false otherwise
-     */
-    bool homePosition();
-    
-    /**
      * Get the left limit position
      * @return Left limit position in meters (relative to home)
      */
