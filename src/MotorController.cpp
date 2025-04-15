@@ -152,56 +152,6 @@ void MotorController::init() {
     printf("Initialization complete. Ready to receive commands.\n");
 }
 
-// void MotorController::init() {
-//     // Initialize LED
-//     printf("Initializing system...\n");
-//     initLED();
-
-//     uint spin_lock_num = next_striped_spin_lock_num();
-//     emergency_spin_lock = spin_lock_init(spin_lock_num);
-
-//     // Configure the stepper motors
-//     left_stepper_.setPidParameters(PID_KP, PID_KI, PID_KD);
-//     // right_stepper_.setPidParameters(PID_KP, PID_KI, PID_KD);
-
-//     // Initialize SPI interface
-//     spi_interface_.init();
-
-//     // Register SPI callbacks
-//     spi_interface_.setCalibrationCallback([this]() { this->onCalibrationCommand(); });
-//     spi_interface_.setPositionCommandCallback([this](char motor, float position) {
-//         return this->onPositionCommand(motor, position);
-//     });
-//     spi_interface_.setPositionStateCallback([this](char motor) {
-//         return this->onPositionStateRequest(motor);
-//     });
-//     spi_interface_.setPidTuneCallback([this](char motor, float kp, float ki, float kd) {
-//         return this->onPidTuneCommand(motor, kp, ki, kd);
-//     });
-
-//     // Initialize GPIO for limit switches, but don't enable interrupts yet
-//     // They will be enabled after calibration
-//     printf("Setting up limit switch GPIO pins...\n");
-//     gpio_set_function(LEFT_LIMIT_LEFT_PIN, GPIO_FUNC_SIO);
-//     gpio_set_function(LEFT_LIMIT_RIGHT_PIN, GPIO_FUNC_SIO);
-//     gpio_set_function(RIGHT_LIMIT_LEFT_PIN, GPIO_FUNC_SIO);
-//     gpio_set_function(RIGHT_LIMIT_RIGHT_PIN, GPIO_FUNC_SIO);
-
-//     gpio_set_dir(LEFT_LIMIT_LEFT_PIN, GPIO_IN);
-//     gpio_set_dir(LEFT_LIMIT_RIGHT_PIN, GPIO_IN);
-//     gpio_set_dir(RIGHT_LIMIT_LEFT_PIN, GPIO_IN);
-//     gpio_set_dir(RIGHT_LIMIT_RIGHT_PIN, GPIO_IN);
-
-//     // Set up the callback without enabling interrupts
-//     gpio_set_irq_callback(&limit_switch_callback);
-//     irq_set_enabled(IO_IRQ_BANK0, true);
-
-//     // Initialize timing variables
-//     last_blink_ = get_absolute_time();
-
-//     printf("Initialization complete. Ready to receive commands.\n");
-// }
-
 void MotorController::update_core0() {
     // Check for emergency stop condition
     if (g_emergency_stop_atomic && !emergency_stop_active) {
@@ -280,129 +230,6 @@ void MotorController::updateLED() {
     }
 }
 
-// void MotorController::onCalibrationCommand() {
-//     printf("Calibration command received. Starting coordinated calibration sequence...\n");
-
-//     // Disable emergency stop interrupts during calibration
-//     gpio_set_irq_enabled(LEFT_LIMIT_LEFT_PIN, GPIO_IRQ_EDGE_RISE, false);
-//     gpio_set_irq_enabled(LEFT_LIMIT_RIGHT_PIN, GPIO_IRQ_EDGE_RISE, false);
-//     gpio_set_irq_enabled(NULL, GPIO_IRQ_EDGE_RISE, false);
-//     gpio_set_irq_enabled(RIGHT_LIMIT_RIGHT_PIN, GPIO_IRQ_EDGE_RISE, false);
-
-//     // Stage 1: First move right motor to its right limit
-//     printf("1. Moving right motor to its right limit...\n");
-//     if (!right_stepper_.moveToLimit(RIGHT_LIMIT_RIGHT_PIN, SimplifiedStepper::CW)) {
-//         printf("ERROR: Right stepper failed to reach right limit: %s\n", right_stepper_.getErrorMessage());
-//         return;
-//     }
-//     printf("Right motor at right limit position.\n");
-
-//     // Stage 2: Calibrate left motor completely (left limit → right limit → left limit)
-//     printf("2. Starting left motor calibration sequence...\n");
-//     calibrateLeftMotor();
-
-//     // Stage 3: Calibrate right motor (left limit → right limit)
-//     printf("3. Starting right motor calibration sequence...\n");
-//     calibrateRightMotor();
-
-//     printf("Calibration complete for both motors.\n");
-
-//     // Home both motors to their respective positions
-//     float leftHomePos = 0.0f;
-//     float rightHomePos = 0.0f;
-
-//     printf("Moving both motors to home positions...\n");
-
-//     // // First move the left motor to home
-//     // left_stepper_.moveTo(leftHomePos);
-//     // while (!left_stepper_.isMotionComplete()) {
-//     //     left_stepper_.update();
-//     //     sleep_us(35);
-//     // }
-
-//     // // Then move the right motor to home
-//     // right_stepper_.moveTo(rightHomePos);
-//     // while (!right_stepper_.isMotionComplete()) {
-//     //     right_stepper_.update();
-//     //     sleep_us(35);
-//     // }
-
-//     left_stepper_.homePosition();
-//     right_stepper_.homePosition();
-
-//     printf("Both motors are now at their home positions.\n");
-//     printf("Transferring right motor control to Core 1...\n");
-
-//     // Re-enable emergency stop interrupts now that calibration is complete
-//     // initEmergencyStop();
-
-//     // Signal that calibration is complete and Core 1 can take over right motor
-//     calibration_complete = true;
-// }
-
-// void MotorController::calibrateLeftMotor() {
-//     printf("Calibrating left stepper...\n");
-
-//     // 1. Move to the left limit switch
-//     printf("Moving left stepper to left limit...\n");
-//     if (!left_stepper_.moveToLimit(LEFT_LIMIT_LEFT_PIN, SimplifiedStepper::CCW)) {
-//         printf("ERROR: Left stepper failed to reach left limit: %s\n", left_stepper_.getErrorMessage());
-//         return;
-//     }
-
-//     // Reset step counter at left limit
-//     left_stepper_.setCurrentPosition(-left_stepper_.getLeftLimitPosition());
-//     printf("Left stepper at left limit. Position reset.\n");
-
-//     // 2. Move to right limit, counting steps
-//     printf("Moving left stepper to right limit...\n");
-//     if (!left_stepper_.moveToLimit(LEFT_LIMIT_RIGHT_PIN, SimplifiedStepper::CW)) {
-//         printf("ERROR: Left stepper failed to reach right limit: %s\n", left_stepper_.getErrorMessage());
-//         return;
-//     }
-
-//     // Save the position at the right limit
-//     float rightLimitPos = left_stepper_.getCurrentPosition();
-//     printf("Left stepper at right limit. Position: %.3f\n", rightLimitPos);
-
-//     // 3. Move back to left limit
-//     printf("Moving left stepper back to left limit...\n");
-//     if (!left_stepper_.moveToLimit(LEFT_LIMIT_LEFT_PIN, SimplifiedStepper::CCW)) {
-//         printf("ERROR: Left stepper failed to return to left limit: %s\n", left_stepper_.getErrorMessage());
-//         return;
-//     }
-
-//     printf("Left stepper calibration complete\n");
-// }
-
-// void MotorController::calibrateRightMotor() {
-//     printf("Calibrating right stepper...\n");
-
-//     // 1. Move to the left limit switch
-//     printf("Moving right stepper to left limit...\n");
-//     if (!right_stepper_.moveToLimit(LEFT_LIMIT_RIGHT_PIN, SimplifiedStepper::CCW)) {
-//         printf("ERROR: Right stepper failed to reach left limit: %s\n", right_stepper_.getErrorMessage());
-//         return;
-//     }
-
-//     // Reset step counter at left limit
-//     right_stepper_.setCurrentPosition(-right_stepper_.getLeftLimitPosition());
-//     printf("Right stepper at left limit. Position reset.\n");
-
-//     // 2. Move to right limit, counting steps
-//     printf("Moving right stepper to right limit...\n");
-//     if (!right_stepper_.moveToLimit(RIGHT_LIMIT_RIGHT_PIN, SimplifiedStepper::CW)) {
-//         printf("ERROR: Right stepper failed to reach right limit: %s\n", right_stepper_.getErrorMessage());
-//         return;
-//     }
-
-//     // Save the position at the right limit
-//     float rightLimitPos = right_stepper_.getCurrentPosition();
-//     printf("Right stepper at right limit. Position: %.3f\n", rightLimitPos);
-
-//     printf("Right stepper calibration complete\n");
-// }
-
 bool MotorController::onCalibrationCommand() {
     printf("Calibration command received.\n");
 
@@ -445,11 +272,6 @@ bool MotorController::onCalibrationCommand() {
     calibrateRightMotor();
 
     printf("Calibration sequence complete for both motors, moving to home positions.\n");
-
-    // Calculate physical positions for homing
-    // Assume middle C is at the center of the actual travel range
-    float actualTravel = TOTAL_RAIL_LENGTH - LEFT_HAND_WIDTH - RIGHT_HAND_WIDTH;
-    float middleC = actualTravel / 2.0f;
 
     float leftHomePos = left_stepper_.getLeftBoundary()  + HOME_OFFSET;  // From left boundary (which is 0)
     float rightHomePos = right_stepper_.getRightBoundary() - HOME_OFFSET;  // Start at left boundary
@@ -668,10 +490,8 @@ void MotorController::emergencyStop() {
         printf("EMERGENCY STOP ACTIVATED!\n");
 
         // Stop both motors immediately
-        // left_stepper_.emergencyStop();
-        // right_stepper_.emergencyStop();
-
-        // Flash LED code...
+        left_stepper_.emergencyStop();
+        right_stepper_.emergencyStop();
     }
 
     spin_unlock(emergency_spin_lock, save);

@@ -99,16 +99,6 @@ void SPIInterface::processCommands() {
 }
 
 void SPIInterface::handleCalibrationCommand() {
-    // // Skip the null
-    // spiReadByte();
-    
-    // // printf("Calibration command received\n");
-    
-    // // Call the callback if registered
-    // if (calibration_callback_) {
-    //     calibration_callback_();
-    // }
-
     // Skip the null
     spiReadByte();
     
@@ -125,8 +115,9 @@ void SPIInterface::handleCalibrationCommand() {
         printf("Sending calibration complete response\n");
     } else {
         // Send dummy byte to indicate in progress
-        uint8_t response = DUMMY;
-        spi_write_blocking(spi_port_, &response, 1);
+        char in_progress_response[2] = {DUMMY, '\0'};
+        spiWriteBuffer(in_progress_response, 2);
+        printf("Sending calibration in-progress response\n");
     }
 }
 

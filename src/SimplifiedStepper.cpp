@@ -468,8 +468,6 @@ bool SimplifiedStepper::isLimitSwitchTriggered() const {
 
 const char* SimplifiedStepper::getErrorMessage() const { return errorMessage; }
 
-// bool SimplifiedStepper::getIsCalibrated() const { return isCalibrated; }
-
 long SimplifiedStepper::moveToLimit(uint8_t limitSwitchPin, bool direction, float slowSpeed) {
     // Make sure we're not already at the limit
     if (gpio_get(limitSwitchPin) == 1) {  // Switches are active HIGH
@@ -548,67 +546,6 @@ bool SimplifiedStepper::moveSteps(long numSteps, bool direction) {
 
     // Update position after steps
     updatePositionFromSteps();
-
-    return true;
-}
-
-// bool SimplifiedStepper::calibrate() {
-//     // 1. Move to the left limit switch
-//     if (moveToLimit(leftLimitPin, CCW) < 0) {
-//         return false;  // Error already set in moveToLimit
-//     }
-
-//     // Reset step counter at left limit
-//     absoluteStepPos = 0;
-
-//     // 2. Move to the right limit switch, counting steps
-//     long stepsToRight = moveToLimit(rightLimitPin, CW);
-//     if (stepsToRight < 0) {
-//         return false;  // Error already set
-//     }
-
-//     // Calculate the mechanical parameters
-//     totalTravelMeters = totalRailLength - leftHandWidth - rightHandWidth;  // tracks centre of hand
-//     stepsPerMeter = static_cast<uint32_t>(stepsToRight / totalTravelMeters);
-
-//     // Calculate limit positions relative to homed position
-//     float railCenterMeters = totalRailLength / 2.0f;
-//     leftLimitPosition = -railCenterMeters + leftHandWidth / 2.0f - homeOffset;
-//     rightLimitPosition = (railCenterMeters - rightHandWidth - leftHandWidth / 2.0f) - homeOffset;
-
-//     // Set calibration flag
-//     isCalibrated = true;
-
-//     // 3. Perform homing
-//     return homePosition();
-// }
-
-bool SimplifiedStepper::homePosition() {
-    // if (!isCalibrated) {
-    //     setError("System not calibrated, cannot home");
-    //     return false;
-    // }
-
-    // Calculate steps from current position to home position
-    float railCenterMeters = totalRailLength / 2.0f;
-    float homePositionStepsFromLeft = (railCenterMeters + homeOffset - leftHandWidth / 2.0f) * stepsPerMeter;
-
-    long stepsToHome = homePositionStepsFromLeft - absoluteStepPos;
-    bool direction = (stepsToHome > 0) ? CW : CCW;
-
-    // Move to home position
-    if (!moveSteps(abs(stepsToHome), direction)) {
-        return false;
-    }
-
-    // Reset position to zero at home position
-    currentPosition = 0.0f;
-    targetPosition = 0.0f;
-    currentVelocity = 0.0f;
-    absoluteStepPos = 0;  // Reset step counter at home position
-
-    // Reset PID controller state
-    resetPid();
 
     return true;
 }
