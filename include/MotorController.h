@@ -41,8 +41,8 @@ public:
     
     // Calibration functions
     bool onCalibrationCommand();
-    void calibrateLeftMotor();
-    void calibrateRightMotor();
+    bool calibrateLeftMotor();
+    bool calibrateRightMotor();
     
     // Emergency stop functions
     void initEmergencyStop();
@@ -73,6 +73,7 @@ private:
     volatile float motor_command_position;
     volatile CalibrationState calibration_state;
     volatile bool calibration_complete;
+    spin_lock_t *left_motor_spin_lock;
     
     // Emergency stop state
     volatile bool emergency_stop_active;

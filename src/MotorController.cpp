@@ -149,6 +149,8 @@ void MotorController::init() {
     // Initialize timing variables
     last_blink_ = get_absolute_time();
 
+    left_motor_spin_lock = spin_lock_init(next_striped_spin_lock_num());
+
     printf("Initialization complete. Ready to receive commands.\n");
 }
 
@@ -163,7 +165,16 @@ void MotorController::update_core0() {
 
     // Update left stepper only if not in emergency stop
     if (!emergency_stop_active) {
-        left_stepper_.update();
+        static absolute_time_t last_update = get_absolute_time();
+        absolute_time_t now = get_absolute_time();
+
+        // if (absolute_time_diff_us(last_update, now) > 5000) {
+            uint32_t save = spin_lock_blocking(left_motor_spin_lock);
+            left_stepper_.update();
+            spin_unlock(left_motor_spin_lock, save);
+            sleep_us(50);
+        //     last_update = now;
+        // }
     }
 
     // Update LED
@@ -259,22 +270,31 @@ bool MotorController::onCalibrationCommand() {
     printf("1. Moving right motor to its right limit...\n");
     if (!right_stepper_.moveToLimit(RIGHT_LIMIT_RIGHT_PIN, SimplifiedStepper::CW)) {
         printf("ERROR: Right stepper failed to reach right limit: %s\n", right_stepper_.getErrorMessage());
+        calibration_state = CALIBRATION_STATE_UNCALIBRATED;
         return false;
     }
     printf("Right motor at right limit position.\n");
 
     // Stage 2: Calibrate left motor completely (left limit → right limit → left limit)
     printf("2. Starting left motor calibration sequence...\n");
-    calibrateLeftMotor();
+    if (!calibrateLeftMotor()) {
+        printf("ERROR: Calibration failed during left stepper calibration sequence.");
+        calibration_state = CALIBRATION_STATE_UNCALIBRATED;
+        return false;
+    }
 
     // Stage 3: Calibrate right motor (left limit → right limit)
-    printf("3. Starting right motor calibration sequence...\n");
-    calibrateRightMotor();
+    // printf("3. Starting right motor calibration sequence...\n");
+    // if (!calibrateRightMotor()) {
+    //     printf("ERROR: Calibration failed during right stepper calibration sequence.");
+    //     calibration_state = CALIBRATION_STATE_UNCALIBRATED;
+    //     return false;
+    // }
 
     printf("Calibration sequence complete for both motors, moving to home positions.\n");
 
-    float leftHomePos = left_stepper_.getLeftBoundary()  + HOME_OFFSET;  // From left boundary (which is 0)
-    float rightHomePos = right_stepper_.getRightBoundary() - HOME_OFFSET;  // Start at left boundary
+    float leftHomePos = left_stepper_.getLeftBoundary()  + HOME_OFFSET * 2.5;  // From left boundary (which is 0)
+    // float rightHomePos = right_stepper_.getRightBoundary() - HOME_OFFSET;  // Start at left boundary
     
     printf("Moving left motor to home position (%.3f m from left boundary)...\n", leftHomePos);
     left_stepper_.moveTo(leftHomePos);
@@ -284,13 +304,13 @@ bool MotorController::onCalibrationCommand() {
     }
     printf("Left motor at home position\n");
     
-    printf("Moving right motor to home position (%.3f m from left boundary)...\n", rightHomePos);
-    right_stepper_.moveTo(rightHomePos);
-    while (!right_stepper_.isMotionComplete()) {
-        right_stepper_.update();
-        sleep_us(35);
-    }
-    printf("Right motor at home position\n");
+    // printf("Moving right motor to home position (%.3f m from left boundary)...\n", rightHomePos);
+    // right_stepper_.moveTo(rightHomePos);
+    // while (!right_stepper_.isMotionComplete()) {
+    //     right_stepper_.update();
+    //     sleep_us(35);
+    // }
+    // printf("Right motor at home position\n");
 
     // Re-enable emergency stop interrupts now that calibration is complete
     // initEmergencyStop();
@@ -302,14 +322,14 @@ bool MotorController::onCalibrationCommand() {
     return (calibration_state == CALIBRATION_STATE_COMPLETED);
 }
 
-void MotorController::calibrateLeftMotor() {
+bool MotorController::calibrateLeftMotor() {
     printf("Calibrating left stepper...\n");
     
     // 1. Move to the left limit switch
     printf("Moving left stepper to left limit...\n");
     if (!left_stepper_.moveToLimit(LEFT_LIMIT_LEFT_PIN, SimplifiedStepper::CCW)) {
         printf("ERROR: Left stepper failed to reach left limit: %s\n", left_stepper_.getErrorMessage());
-        return;
+        return false;
     }
     
     // Reset step counter at left limit
@@ -325,7 +345,7 @@ void MotorController::calibrateLeftMotor() {
     long stepsToRight = left_stepper_.moveToLimit(LEFT_LIMIT_RIGHT_PIN, SimplifiedStepper::CW);
     if (stepsToRight < 0) {
         printf("ERROR: Left stepper failed to reach right limit: %s\n", left_stepper_.getErrorMessage());
-        return;
+        return false;
     }
     
     // Calculate the expected travel (should be less than the rail length minus right hand width)
@@ -342,7 +362,7 @@ void MotorController::calibrateLeftMotor() {
     
     // Now update the current position based on the new steps per meter
     float leftRightLimitPos = static_cast<float>(stepsToRight) / actualStepsPerMeter;
-    left_stepper_.setCurrentPosition(left_stepper_.getCurrentPosition());
+    // left_stepper_.setCurrentPosition(left_stepper_.getCurrentPosition());
     printf("Left stepper at right limit. Recalculated position: %.3f meters\n", left_stepper_.getCurrentPosition());
     
     // Set right boundary
@@ -351,27 +371,30 @@ void MotorController::calibrateLeftMotor() {
     // 3. Move back to left limit
     printf("Moving left stepper back to left limit...\n");
     if (!left_stepper_.moveToLimit(LEFT_LIMIT_LEFT_PIN, SimplifiedStepper::CCW)) {
-        printf("ERROR: Left stepper failed to return to left limit: %s\n", left_stepper_.getErrorMessage());
-        return;
+        printf("ERROR: Left stepper failed to reach left limit: %s\n", left_stepper_.getErrorMessage());
+        return false;
     }
+    printf("Left stepper at left limit. Recalculated position: %.3f meters\n", left_stepper_.getCurrentPosition());
     
     // Reset position to 0 again at left limit
-    // left_stepper_.setCurrentPosition(left_stepper_.getCurrentPosition());
+    left_stepper_.setCurrentPosition(left_stepper_.getCurrentPosition());
     // left_stepper_.resetStepCounter(); // Reset steps again
-    printf("Left stepper back at left limit. Position reset to 0.0.\n");
+    // printf("Left stepper back at left limit. Position reset to 0.0.\n");
     
     printf("Left stepper calibration complete. Total travel: %.3f meters (expected: %.3f m)\n", 
         left_stepper_.getRightBoundary(), expectedMaxTravel);
+
+    return true;
 }
 
-void MotorController::calibrateRightMotor() {
+bool MotorController::calibrateRightMotor() {
     printf("Calibrating right stepper...\n");
     
     // 1. First measure the total rail distance by moving to left limit
     printf("Moving right stepper to left limit...\n");
     if (!right_stepper_.moveToLimit(LEFT_LIMIT_RIGHT_PIN, SimplifiedStepper::CCW)) {
         printf("ERROR: Right stepper failed to reach left limit: %s\n", right_stepper_.getErrorMessage());
-        return;
+        return false;
     }
 
     right_stepper_.resetStepCounter(); // Make sure steps are reset
@@ -389,7 +412,7 @@ void MotorController::calibrateRightMotor() {
     long stepsToRight = right_stepper_.moveToLimit(RIGHT_LIMIT_RIGHT_PIN, SimplifiedStepper::CW);
     if (stepsToRight < 0) {
         printf("ERROR: Right stepper failed to reach right limit: %s\n", right_stepper_.getErrorMessage());
-        return;
+        return false;
     }
     
     // Calculate the expected travel distance
@@ -417,6 +440,8 @@ void MotorController::calibrateRightMotor() {
            actualTravel, expectedMaxTravel);
     printf("Total rail length measured: %.3f meters (defined as: %.3f m)\n", 
         right_stepper_.getRightBoundary(), TOTAL_RAIL_LENGTH);
+
+    return true;
 }
 
 bool MotorController::onPositionCommand(char motor, float position) {
@@ -430,13 +455,15 @@ bool MotorController::onPositionCommand(char motor, float position) {
 
     if (calibration_state == CALIBRATION_STATE_COMPLETED) {
         if (motor == 'l') {
-            printf("Moving left stepper to position %.3f\n", position);
+            printf("COMMAND: Move left stepper to position %.3f\n", position);
+            uint32_t save = spin_lock_blocking(left_motor_spin_lock);
             result = left_stepper_.moveTo(position);
+            spin_unlock(left_motor_spin_lock, save);
             if (!result) {
                 printf("ERROR: Failed to move left stepper: %s\n", left_stepper_.getErrorMessage());
             }
         } else if (motor == 'r') {
-            printf("Moving right stepper to position %.3f\n", position);
+            printf("COMMAND: Move right stepper to position %.3f\n", position);
 
             if (core1_ready) {
                 // Send command to core1

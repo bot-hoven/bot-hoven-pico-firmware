@@ -207,6 +207,12 @@ float SimplifiedStepper::updatePid() {
     // Calculate derivative term (change in error over time)
     float errorDerivative = (error - lastError) / dt;
 
+    // *** Add protection against derivative jitter ***
+    // Limit the derivative term to prevent oscillations
+    if (fabs(errorDerivative) > fabs(error) * 10.0f) {
+        errorDerivative = (errorDerivative > 0) ? fabs(error) * 10.0f : -fabs(error) * 10.0f;
+    }
+
     // Update integral term with anti-windup
     errorIntegral += error * dt;
 
@@ -225,6 +231,19 @@ float SimplifiedStepper::updatePid() {
 
     // Keep track of direction
     bool newDirection = (output >= 0);
+
+    // *** Add hysteresis to direction changes ***
+    static uint64_t lastDirectionChangeTime = 0;
+    const uint64_t MIN_DIRECTION_CHANGE_INTERVAL_US = 100000; // 100ms
+    
+    if (direction != newDirection) {
+        if (now - lastDirectionChangeTime < MIN_DIRECTION_CHANGE_INTERVAL_US) {
+            // Skip direction change if too soon after last change
+            newDirection = direction;
+        } else {
+            lastDirectionChangeTime = now;
+        }
+    }
 
     // Use absolute value for velocity
     output = fabs(output);
@@ -277,6 +296,8 @@ void SimplifiedStepper::step() {
         absoluteStepPos--;
     }
 
+    printf("Absolute step position is %d.\n", absoluteStepPos);
+
     // Update current position in meters
     updatePositionFromSteps();
 
@@ -322,6 +343,10 @@ void SimplifiedStepper::setDirection(bool isClockwise) {
     if (pulsePin == RIGHT_PULSE_PIN) {
         actualDirection = !isClockwise;
     }
+
+    printf("Setting pin for %s motor: %s\n", 
+        pulsePin == LEFT_PULSE_PIN ? "LEFT" : "RIGHT",
+        actualDirection ? "CW" : "CCW");
 
     gpio_put(dirPin, actualDirection ? 0 : 1);
     busy_wait_us(4);  // Minimum 2μs delay per datasheet
@@ -412,10 +437,7 @@ bool SimplifiedStepper::moveTo(float position) {
     // Update direction based on target position
     bool newDirection = (distance >= 0) ? SimplifiedStepper::CW : SimplifiedStepper::CCW;
     
-    char dirString[100];
-    snprintf(dirString, sizeof(dirString), "Old direction is %s.", 
-        direction == SimplifiedStepper::CW ? "CW" : "CCW");
-    printf("%s\n", dirString);
+    printf("Direction to move is %s.", direction == SimplifiedStepper::CW ? "CW" : "CCW");
 
     // If direction changed, set it
     if (direction != newDirection) {
@@ -423,11 +445,8 @@ bool SimplifiedStepper::moveTo(float position) {
         setDirection(direction);
     }
 
-    snprintf(dirString, sizeof(dirString), "New direction is %s.", 
-        direction == SimplifiedStepper::CW ? "CW" : "CCW");
-    printf("%s\n", dirString);
+    printf("New direction is %s.", direction == SimplifiedStepper::CW ? "CW" : "CCW");
 
-    
     // If we're not already moving and the distance is significant, start moving
     if (!isMoving && fabs(distance) > MAX_POSITION_ERROR / stepsPerMeter) {
         isMoving = true;
