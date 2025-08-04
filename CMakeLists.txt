@@ -37,9 +37,7 @@ pico_sdk_init()
 
 add_executable(Pico_2_Stepper 
     src/main.cpp
-    src/MotorController.cpp
-    src/SPIInterface.cpp
-    src/SimplifiedStepper.cpp
+    src/SPIHandler.cpp
 )
 
 pico_set_program_name(Pico_2_Stepper "Pico_2_Stepper")
@@ -70,9 +68,10 @@ target_link_libraries(Pico_2_Stepper
         hardware_watchdog
         hardware_clocks
         hardware_irq
+        hardware_pwm
         pico_multicore
         pico_stdlib
-        )
+)
 
 pico_add_extra_outputs(Pico_2_Stepper)
 

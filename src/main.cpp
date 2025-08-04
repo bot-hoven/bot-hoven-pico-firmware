@@ -1,153 +1,175 @@
-#include <stdio.h>
-#include "pico/stdlib.h"
-#include "include/MotorController.h"
-#include "pico/multicore.h"
+#include <cmath>
+#include <cstdio>
+#include <cstring>
 
-// Entry point for program
-int main() {
-    // Initialize stdio for debug output
-    stdio_init_all();
-    // Wait for serial connection to stabilize
-    sleep_ms(2000);
-    
-    printf("Starting Bot-Hoven Motor Controller\n");
-    
-    // Initialize LED for visual debugging
-    gpio_init(PICO_DEFAULT_LED_PIN);
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-    
-    // Turn on LED to indicate startup
-    gpio_put(PICO_DEFAULT_LED_PIN, 1);
-    sleep_ms(500);
-    gpio_put(PICO_DEFAULT_LED_PIN, 0);
-    
-    // Create and initialize the motor controller
-    printf("Creating motor controller...\n");
-    MotorController controller;
-    
-    printf("Initializing motor controller...\n");
-    controller.init();
-    
-    // Turn on LED again to indicate controller initialized
-    gpio_put(PICO_DEFAULT_LED_PIN, 1);
-    sleep_ms(500);
-    gpio_put(PICO_DEFAULT_LED_PIN, 0);
-    
-    printf("Launching Core 1...\n");
-    // Launch Core 1 to handle right motor
-    multicore_launch_core1(MotorController::core1_entry_static);
-    
-    printf("Core 1 launched. Entering main loop on Core 0.\n");
-    
-    // Main program loop on Core 0
-    while (true) {
-        // Process core 0 tasks (left motor and SPI)
-        controller.update_core0();
-        
-        // Small delay to prevent tight looping
-        sleep_us(100);
+#include "hardware/clocks.h"
+#include "hardware/irq.h"
+#include "hardware/pwm.h"
+#include "hardware/spi.h"
+#include "pico/stdlib.h"
+
+#include "include/SPIHandler.h"
+
+#define PIN_MISO 16
+#define PIN_CS 17
+#define PIN_SCK 18
+#define PIN_MOSI 19
+#define SPI_PORT spi0
+#define SPI_BAUDRATE_HZ 500000 // 500 kHz
+
+#define DIR_PIN_L 2
+#define STEP_PIN_L 3
+#define DIR_PIN_R 4
+#define STEP_PIN_R 5
+
+#define MAX_VEL_MPS 10.0f
+
+static const uint8_t LIMIT_PINS[] = {2, 3, 4, 5};
+
+static constexpr float STEPS_PER_METER = 10000.0f;
+static constexpr uint16_t PWM_WRAP = 255; // use 8-bit counter
+
+volatile int64_t step_count_l = 0;
+volatile int64_t step_count_r = 0;
+bool dir_l_forward = true;
+bool dir_r_forward = true;
+uint pwm_slice_l, pwm_chan_l;
+uint pwm_slice_r, pwm_chan_r;
+volatile bool critical_fault = false;
+
+// pwm-wrap IRQ: bump the step counters (one wrap == one pulse period)
+void __time_critical_func(on_pwm_wrap)() {
+  uint32_t irq = pwm_get_irq_status_mask();
+  for (uint slice = 0; slice < 8; ++slice) {
+    if (irq & (1u << slice)) {
+      pwm_clear_irq(slice);
+      if (slice == pwm_slice_l)
+        step_count_l += dir_l_forward ? 1 : -1;
+      else if (slice == pwm_slice_r)
+        step_count_r += dir_r_forward ? 1 : -1;
     }
-    
-    return 0;
+  }
 }
 
+void limit_switch_handler(uint gpio, uint32_t events) {
+  printf("LIMIT SWITCH PRESSED");
 
+  // stop everything immediately
+  pwm_set_enabled(pwm_slice_l, false);
+  pwm_set_enabled(pwm_slice_r, false);
+  critical_fault = true;
 
+  // blink onboard LED to indicate fault
+  gpio_put(PICO_DEFAULT_LED_PIN, 1);
+}
 
+// set up all limit-switch GPIOs with same interrupt callback
+void init_limit_switches() {
+  for (auto pin : LIMIT_PINS) {
+    gpio_init(pin);
+    gpio_set_dir(pin, GPIO_IN);
+    gpio_pull_down(pin);
+    gpio_set_irq_enabled_with_callback(pin, GPIO_IRQ_EDGE_RISE, true,
+                                       limit_switch_handler);
+  }
+}
 
+// adjust one motor’s PWM for a given velocity
+void set_motor_pwm(uint slice, uint chan, bool dir_forward, float vel_mps) {
+  gpio_put((slice == pwm_slice_l ? DIR_PIN_L : DIR_PIN_R), dir_forward);
+  float freq = fabsf(vel_mps) * STEPS_PER_METER;
+  if (freq > 0.0f && !critical_fault) {
+    float div = float(clock_get_hz(clk_sys)) / (freq * (PWM_WRAP + 1));
+    pwm_set_clkdiv(slice, div);
+    pwm_set_enabled(slice, true);
+  } else {
+    pwm_set_enabled(slice, false);
+  }
+}
 
+// setup and SPI handling
+int main() {
+  stdio_init_all();
+  sleep_ms(200);
 
+  gpio_init(PICO_DEFAULT_LED_PIN);
+  gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+  gpio_put(PICO_DEFAULT_LED_PIN, 1);
+  sleep_ms(200);
+  gpio_put(PICO_DEFAULT_LED_PIN, 0);
 
+  gpio_init(DIR_PIN_L);
+  gpio_set_dir(DIR_PIN_L, GPIO_OUT);
+  gpio_init(DIR_PIN_R);
+  gpio_set_dir(DIR_PIN_R, GPIO_OUT);
 
+  // configure pico pwm
+  gpio_set_function(STEP_PIN_L, GPIO_FUNC_PWM);
+  gpio_set_function(STEP_PIN_R, GPIO_FUNC_PWM);
+  pwm_slice_l = pwm_gpio_to_slice_num(STEP_PIN_L);
+  pwm_chan_l = pwm_gpio_to_channel(STEP_PIN_L);
+  pwm_slice_r = pwm_gpio_to_slice_num(STEP_PIN_R);
+  pwm_chan_r = pwm_gpio_to_channel(STEP_PIN_R);
+  pwm_set_wrap(pwm_slice_l, PWM_WRAP);
+  pwm_set_wrap(pwm_slice_r, PWM_WRAP);
+  pwm_set_chan_level(pwm_slice_l, pwm_chan_l, PWM_WRAP / 2);
+  pwm_set_chan_level(pwm_slice_r, pwm_chan_r, PWM_WRAP / 2);
 
-// // #include <stdio.h>
-// // #include "pico/stdlib.h"
-// // #include "pico/multicore.h"
-// // #include "include/MotorController.h"
+  // configure pwm IRQ on wrap
+  irq_set_exclusive_handler(PWM_IRQ_WRAP, on_pwm_wrap);
+  irq_set_enabled(PWM_IRQ_WRAP, true);
+  pwm_clear_irq(pwm_slice_l);
+  pwm_clear_irq(pwm_slice_r);
+  pwm_set_irq_enabled(pwm_slice_l, true);
+  pwm_set_irq_enabled(pwm_slice_r, true);
+  pwm_set_enabled(pwm_slice_l, false);
+  pwm_set_enabled(pwm_slice_r, false);
 
-// // // Global shared motor controller instance
-// // MotorController* g_controller = nullptr;
+  init_limit_switches();
 
-// // // Flag for signaling calibration events
-// // volatile bool g_calibrate_right_motor = false;
-// // volatile bool g_right_motor_calibration_complete = false;
+  SPIHandler spi(SPI_PORT, PIN_MISO, PIN_MOSI, PIN_SCK, PIN_CS,
+                 SPI_BAUDRATE_HZ);
+  spi.begin();
 
-// // // Function that will run on Core 1
-// // void core1_right_motor_task() {
-// //     // Initialize core 1
-// //     printf("Core 1 started - handling right motor\n");
-    
-// //     // Infinite loop to continuously process the right motor
-// //     while (true) {
-// //         // Check if controller has been initialized
-// //         if (g_controller) {
-// //             // Check if calibration is requested
-// //             if (g_calibrate_right_motor) {
-// //                 g_controller->calibrateRightMotor();
-// //                 g_right_motor_calibration_complete = true;
-// //                 g_calibrate_right_motor = false;
-// //             }
-            
-// //             // Update only the right motor
-// //             g_controller->updateRightMotor();
-// //         }
-        
-// //         // Small delay to prevent tight looping
-// //         sleep_us(50);
-// //     }
-// // }
+  while (true) {
+    uint8_t frame[6];
+    spi.read_frame(frame, 6);
+    char cmd = frame[0];
+    char motor = frame[1];
 
-// // int main() {
-// //     // Initialize stdio for debugging output
-// //     stdio_init_all();
-// //     sleep_ms(2000); // Wait for serial connection to stabilize
-    
-// //     // Create and initialize the motor controller
-// //     MotorController controller;
-// //     g_controller = &controller;
-// //     controller.init();
-    
-// //     printf("Launch the core\n");
-// //     // Launch Core 1 to handle right motor exclusively
-// //     multicore_launch_core1(core1_right_motor_task);
-    
-// //     // Main program loop on Core 0
-// //     while (true) {
-// //         // Process updates for left motor and SPI
-// //         controller.updateLeftMotorAndSPI();
-        
-// //         // Small delay to prevent tight looping
-// //         sleep_us(50);
-// //     }
-    
-// //     return 0;
-// // }
+    if (cmd != 's' && cmd != 'g') {
+      continue;
+    }
 
+    printf("Received command: %c%c\n", cmd, motor);
 
-// #include <stdio.h>
-// #include "pico/stdlib.h"
-// #include "include/MotorController.h"
-// #include "pico/multicore.h"
+    if (cmd == 's') {
+      float vel_mps;
+      std::memcpy(&vel_mps, &frame[2], sizeof(vel_mps));
 
-// volatile bool g_calibrate_right_motor;
-// volatile bool g_right_motor_calibration_complete;
+      if (std::isnan(vel_mps) || std::abs(vel_mps) > MAX_VEL_MPS) {
+        continue;
+      }
 
-// int main() {
-//     // Initialize controller
-//     MotorController controller;
-//     controller.init();
-//     printf("Launching core...\n");
-    
-//     // Split duties between cores
-//     multicore_launch_core1(MotorController::core1_entry_static);
+      printf("Received set value: %f\n", vel_mps);
 
-//     printf("Made past launch core1\n");
-    
-//     // Core 0 handles SPI and left stepper
-//     while (true) {
-//         controller.update_core0();
-//         sleep_us(50);
-//     }
-    
-//     return 0;
-// }
+      if (motor == 'l') {
+        dir_l_forward = (vel_mps >= 0);
+        set_motor_pwm(pwm_slice_l, pwm_chan_l, dir_l_forward, vel_mps);
+      } else {
+        dir_r_forward = (vel_mps >= 0);
+        set_motor_pwm(pwm_slice_r, pwm_chan_r, dir_r_forward, vel_mps);
+      }
+    } else if (cmd == 'g') {
+      uint8_t curr_pos[4];
+      int64_t cnt = (motor == 'l' ? step_count_l : step_count_r);
+      float pos_m = float(cnt) / STEPS_PER_METER;
+      pos_m = 17.38;
+      std::memcpy(curr_pos, &pos_m, sizeof(pos_m));
+      spi.write_response(curr_pos, 4);
+      printf("Sent back: %f\n", pos_m);
+    }
+  }
+
+  return 0;
+}
