@@ -1,5 +1,6 @@
 #include "include/SPIHandler.h"
 #include "pico/stdlib.h"
+#include <stdio.h>
 
 SPIHandler::SPIHandler(spi_inst_t *port, uint miso, uint mosi, uint sck,
                        uint cs, uint32_t baud)
@@ -17,9 +18,12 @@ void SPIHandler::begin() {
 }
 
 void SPIHandler::read_frame(uint8_t *buf, size_t len) {
-  spi_read_blocking(spi_, 0x00, buf, len);
+  int bytes_read = spi_read_blocking(spi_, 0x00, buf, len);
+//   printf("Bytes read on read: %d", bytes_read);
 }
 
 void SPIHandler::write_response(const uint8_t *buf, size_t len) {
-  spi_write_blocking(spi_, buf, len);
+  int bytes_written = spi_write_blocking(spi_, buf, len);
+//   printf("Bytes written on write: %d", bytes_written);
+
 }

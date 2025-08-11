@@ -15,55 +15,76 @@
 #define PIN_SCK 18
 #define PIN_MOSI 19
 #define SPI_PORT spi0
-#define SPI_BAUDRATE_HZ 500000 // 500 kHz
+#define SPI_BAUDRATE_HZ 125'000
 
-#define DIR_PIN_L 2
-#define STEP_PIN_L 3
-#define DIR_PIN_R 4
-#define STEP_PIN_R 5
+#define STEP_PIN_L 10
+#define DIR_PIN_L 11
+#define STEP_PIN_R 6
+#define DIR_PIN_R 7
 
-#define MAX_VEL_MPS 10.0f
+#define CW 1
+#define CCW 0
 
-static const uint8_t LIMIT_PINS[] = {2, 3, 4, 5};
+#define LL_LIMIT 2
+#define LR_LIMIT 3
+#define RR_LIMIT 5
 
-static constexpr float STEPS_PER_METER = 10000.0f;
-static constexpr uint16_t PWM_WRAP = 255; // use 8-bit counter
+#define MAX_VEL_MPS 5.0f
+
+// rail is ~88k steps with a 6400 steps/rev microstepping config
+// therefore use 88k/1.2192 = 72k steps/meter as an initial guess for
+// calibration
+#define CALIB_STEPS_PER_METER 72'000
+#define CALIB_SPEED_MPS 0.3f
+
+static const uint8_t LIMIT_PINS[] = {LL_LIMIT, LR_LIMIT, RR_LIMIT};
+
+// 2^10 - 1
+// at a step count of ~72k steps/meter, this wrap values gives
+// a max speed of 1 meter/sec and a min speed of 3.9 millimeter/sec
+static constexpr uint16_t PWM_WRAP = 2047;
 
 volatile int64_t step_count_l = 0;
 volatile int64_t step_count_r = 0;
 bool dir_l_forward = true;
 bool dir_r_forward = true;
+
 uint pwm_slice_l, pwm_chan_l;
 uint pwm_slice_r, pwm_chan_r;
+
+// these get filled in by calibrate()
+float steps_per_meter_l = 0.0f;
+float steps_per_meter_r = 0.0f;
+
+// during calibration, we don’t want the ISR to fault out
+volatile bool is_calibrating = false;
 volatile bool critical_fault = false;
 
-// pwm-wrap IRQ: bump the step counters (one wrap == one pulse period)
+// isr increments/decrements step counters on each PWM wrap
 void __time_critical_func(on_pwm_wrap)() {
   uint32_t irq = pwm_get_irq_status_mask();
   for (uint slice = 0; slice < 8; ++slice) {
     if (irq & (1u << slice)) {
       pwm_clear_irq(slice);
       if (slice == pwm_slice_l)
-        step_count_l += dir_l_forward ? 1 : -1;
+        step_count_l += dir_l_forward ? +1 : -1;
       else if (slice == pwm_slice_r)
-        step_count_r += dir_r_forward ? 1 : -1;
+        step_count_r += dir_r_forward ? +1 : -1;
     }
   }
 }
 
+// stop motors if not calibrating
 void limit_switch_handler(uint gpio, uint32_t events) {
-  printf("LIMIT SWITCH PRESSED");
-
-  // stop everything immediately
-  pwm_set_enabled(pwm_slice_l, false);
-  pwm_set_enabled(pwm_slice_r, false);
-  critical_fault = true;
-
-  // blink onboard LED to indicate fault
-  gpio_put(PICO_DEFAULT_LED_PIN, 1);
+  printf("LIMIT SWITCH PRESSED on pin %u\n", gpio);
+  if (!is_calibrating) {
+    pwm_set_enabled(pwm_slice_l, false);
+    pwm_set_enabled(pwm_slice_r, false);
+    critical_fault = true;
+    gpio_put(PICO_DEFAULT_LED_PIN, 1);
+  }
 }
 
-// set up all limit-switch GPIOs with same interrupt callback
 void init_limit_switches() {
   for (auto pin : LIMIT_PINS) {
     gpio_init(pin);
@@ -74,12 +95,58 @@ void init_limit_switches() {
   }
 }
 
-// adjust one motor’s PWM for a given velocity
-void set_motor_pwm(uint slice, uint chan, bool dir_forward, float vel_mps) {
-  gpio_put((slice == pwm_slice_l ? DIR_PIN_L : DIR_PIN_R), dir_forward);
-  float freq = fabsf(vel_mps) * STEPS_PER_METER;
+// set up step/DIR pins and PWM interrupts
+void init_hardware() {
+  // direction pins
+  gpio_init(DIR_PIN_L);
+  gpio_set_dir(DIR_PIN_L, GPIO_OUT);
+  gpio_init(DIR_PIN_R);
+  gpio_set_dir(DIR_PIN_R, GPIO_OUT);
+
+  // step pins (PWM)
+  gpio_set_function(STEP_PIN_L, GPIO_FUNC_PWM);
+  gpio_set_function(STEP_PIN_R, GPIO_FUNC_PWM);
+
+  pwm_slice_l = pwm_gpio_to_slice_num(STEP_PIN_L);
+  pwm_chan_l = pwm_gpio_to_channel(STEP_PIN_L);
+  pwm_slice_r = pwm_gpio_to_slice_num(STEP_PIN_R);
+  pwm_chan_r = pwm_gpio_to_channel(STEP_PIN_R);
+
+  pwm_set_wrap(pwm_slice_l, PWM_WRAP);
+  pwm_set_wrap(pwm_slice_r, PWM_WRAP);
+  pwm_set_chan_level(pwm_slice_l, pwm_chan_l, PWM_WRAP / 2);
+  pwm_set_chan_level(pwm_slice_r, pwm_chan_r, PWM_WRAP / 2);
+
+  irq_set_exclusive_handler(PWM_IRQ_WRAP, on_pwm_wrap);
+  irq_set_enabled(PWM_IRQ_WRAP, true);
+  pwm_clear_irq(pwm_slice_l);
+  pwm_clear_irq(pwm_slice_r);
+  pwm_set_irq_enabled(pwm_slice_l, true);
+  pwm_set_irq_enabled(pwm_slice_r, true);
+
+  pwm_set_enabled(pwm_slice_l, false);
+  pwm_set_enabled(pwm_slice_r, false);
+}
+
+// set a motor’s PWM for a given velocity (m/s)
+void set_motor_pwm(uint slice, uint chan, uint8_t dir, float vel_mps) {
+  if (slice == pwm_slice_l) {
+    gpio_put(DIR_PIN_L, dir);
+    dir_l_forward = (dir == CW);
+  } else {
+    gpio_put(DIR_PIN_R, dir);
+    dir_r_forward = (dir == CW);
+  }
+
+  float steps_per_meter =
+      (slice == pwm_slice_l ? steps_per_meter_l : steps_per_meter_r);
+  float freq = fabsf(vel_mps) *
+               (is_calibrating ? CALIB_STEPS_PER_METER : steps_per_meter);
+
   if (freq > 0.0f && !critical_fault) {
+    printf("clock hz: %u\n", clock_get_hz(clk_sys));
     float div = float(clock_get_hz(clk_sys)) / (freq * (PWM_WRAP + 1));
+    div = std::max(0.0f, std::min(255.0f, div));
     pwm_set_clkdiv(slice, div);
     pwm_set_enabled(slice, true);
   } else {
@@ -87,51 +154,112 @@ void set_motor_pwm(uint slice, uint chan, bool dir_forward, float vel_mps) {
   }
 }
 
-// setup and SPI handling
+// move until a particular limit switch is pressed
+void move_until(uint slice, uint chan, uint8_t direction, float vel_mps,
+                uint limit_pin) {
+  set_motor_pwm(slice, chan, direction, vel_mps);
+  while (!gpio_get(limit_pin)) {
+    tight_loop_contents();
+  }
+  set_motor_pwm(slice, chan, direction, 0.0f);
+  sleep_ms(50); // debounce
+}
+
+// do calibration and zeroing
+void calibrate() {
+  is_calibrating = true;
+  critical_fault = false;
+
+  sleep_ms(100);
+
+  // 1. bring left to LL, right to RR
+  printf("1) Homing ends...\n");
+  move_until(pwm_slice_l, pwm_chan_l, CCW, CALIB_SPEED_MPS, LL_LIMIT);
+  move_until(pwm_slice_r, pwm_chan_r, CW, CALIB_SPEED_MPS, RR_LIMIT);
+
+  // 2. measure left full travel
+  printf("2) Measuring left travel...\n");
+  step_count_l = 0;
+  move_until(pwm_slice_l, pwm_chan_l, CW, CALIB_SPEED_MPS, LR_LIMIT);
+  int64_t left_max = abs(step_count_l);
+
+  // 3. return left to LL
+  printf("3) Returning left home...\n");
+  move_until(pwm_slice_l, pwm_chan_l, CCW, CALIB_SPEED_MPS, LL_LIMIT);
+
+  // 4. measure right full travel
+  printf("4) Measuring right travel...\n");
+  step_count_r = 0;
+  move_until(pwm_slice_r, pwm_chan_r, CCW, CALIB_SPEED_MPS, LR_LIMIT);
+  int64_t right_max = abs(step_count_r);
+
+  // 5. return right to RR
+  printf("5) Returning right home...\n");
+  move_until(pwm_slice_r, pwm_chan_r, CW, CALIB_SPEED_MPS, RR_LIMIT);
+
+  // compute steps/meter
+  const float rail_length = 1.2192f; // meters
+  steps_per_meter_l = float(left_max) / rail_length;
+  steps_per_meter_r = float(right_max) / rail_length;
+  printf("Calibrated!\nL: %f steps_per_meter, R: %f steps_per_meter\n",
+         steps_per_meter_l, steps_per_meter_r);
+
+  // 6. move to home offsets (+-0.3 m from center) and zero-counters
+  const float half = rail_length / 2.0f;
+  const float offset = 0.3f;
+
+  {
+    step_count_l = 0;
+    uint32_t steps = uint32_t((half - offset) * steps_per_meter_l);
+    set_motor_pwm(pwm_slice_l, pwm_chan_l, CW, CALIB_SPEED_MPS);
+    while (uint64_t(step_count_l) < steps) {
+      tight_loop_contents();
+    }
+    set_motor_pwm(pwm_slice_l, pwm_chan_l, 0.0f, 0.0f);
+    step_count_l = 0; // zero position
+  }
+
+  {
+    step_count_r = 0;
+    int32_t steps = -1 * uint32_t((half - offset) * steps_per_meter_r);
+    set_motor_pwm(pwm_slice_r, pwm_chan_r, CCW, CALIB_SPEED_MPS);
+    while (step_count_r > steps) {
+      tight_loop_contents();
+    }
+    set_motor_pwm(pwm_slice_r, pwm_chan_r, 0.0f, 0.0f);
+    step_count_r = 0; // zero position
+  }
+
+  printf("Zeroing complete. Home positions set.\n");
+  is_calibrating = false;
+}
+
 int main() {
   stdio_init_all();
-  sleep_ms(200);
+  sleep_ms(1000);
 
+  // blink LED on startup
   gpio_init(PICO_DEFAULT_LED_PIN);
   gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
   gpio_put(PICO_DEFAULT_LED_PIN, 1);
-  sleep_ms(200);
+  sleep_ms(500);
   gpio_put(PICO_DEFAULT_LED_PIN, 0);
 
-  gpio_init(DIR_PIN_L);
-  gpio_set_dir(DIR_PIN_L, GPIO_OUT);
-  gpio_init(DIR_PIN_R);
-  gpio_set_dir(DIR_PIN_R, GPIO_OUT);
-
-  // configure pico pwm
-  gpio_set_function(STEP_PIN_L, GPIO_FUNC_PWM);
-  gpio_set_function(STEP_PIN_R, GPIO_FUNC_PWM);
-  pwm_slice_l = pwm_gpio_to_slice_num(STEP_PIN_L);
-  pwm_chan_l = pwm_gpio_to_channel(STEP_PIN_L);
-  pwm_slice_r = pwm_gpio_to_slice_num(STEP_PIN_R);
-  pwm_chan_r = pwm_gpio_to_channel(STEP_PIN_R);
-  pwm_set_wrap(pwm_slice_l, PWM_WRAP);
-  pwm_set_wrap(pwm_slice_r, PWM_WRAP);
-  pwm_set_chan_level(pwm_slice_l, pwm_chan_l, PWM_WRAP / 2);
-  pwm_set_chan_level(pwm_slice_r, pwm_chan_r, PWM_WRAP / 2);
-
-  // configure pwm IRQ on wrap
-  irq_set_exclusive_handler(PWM_IRQ_WRAP, on_pwm_wrap);
-  irq_set_enabled(PWM_IRQ_WRAP, true);
-  pwm_clear_irq(pwm_slice_l);
-  pwm_clear_irq(pwm_slice_r);
-  pwm_set_irq_enabled(pwm_slice_l, true);
-  pwm_set_irq_enabled(pwm_slice_r, true);
-  pwm_set_enabled(pwm_slice_l, false);
-  pwm_set_enabled(pwm_slice_r, false);
-
+  init_hardware();
   init_limit_switches();
+
+  printf("Starting calibration...");
+  calibrate();
+
+  sleep_ms(1000);
 
   SPIHandler spi(SPI_PORT, PIN_MISO, PIN_MOSI, PIN_SCK, PIN_CS,
                  SPI_BAUDRATE_HZ);
   spi.begin();
 
   while (true) {
+    // process SPI in blocking manner
+    // this is fine because pulse generation is offloaded to PWM modules
     uint8_t frame[6];
     spi.read_frame(frame, 6);
     char cmd = frame[0];
@@ -141,8 +269,6 @@ int main() {
       continue;
     }
 
-    printf("Received command: %c%c\n", cmd, motor);
-
     if (cmd == 's') {
       float vel_mps;
       std::memcpy(&vel_mps, &frame[2], sizeof(vel_mps));
@@ -150,8 +276,6 @@ int main() {
       if (std::isnan(vel_mps) || std::abs(vel_mps) > MAX_VEL_MPS) {
         continue;
       }
-
-      printf("Received set value: %f\n", vel_mps);
 
       if (motor == 'l') {
         dir_l_forward = (vel_mps >= 0);
@@ -163,11 +287,11 @@ int main() {
     } else if (cmd == 'g') {
       uint8_t curr_pos[4];
       int64_t cnt = (motor == 'l' ? step_count_l : step_count_r);
-      float pos_m = float(cnt) / STEPS_PER_METER;
-      pos_m = 17.38;
+      float steps_per_meter =
+          (motor == 'l' ? steps_per_meter_l : steps_per_meter_r);
+      float pos_m = float(cnt) / steps_per_meter;
       std::memcpy(curr_pos, &pos_m, sizeof(pos_m));
       spi.write_response(curr_pos, 4);
-      printf("Sent back: %f\n", pos_m);
     }
   }
 
