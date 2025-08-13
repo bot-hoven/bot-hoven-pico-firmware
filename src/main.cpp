@@ -29,13 +29,15 @@
 #define LR_LIMIT 3
 #define RR_LIMIT 5
 
-#define MAX_VEL_MPS 5.0f
-
 // rail is ~88k steps with a 6400 steps/rev microstepping config
 // therefore use 88k/1.2192 = 72k steps/meter as an initial guess for
 // calibration
 #define CALIB_STEPS_PER_METER 72'000
 #define CALIB_SPEED_MPS 0.3f
+
+#define MAX_VEL_MPS 1.0f
+#define HAND_WIDTH 0.205 // meters
+#define HOME_FROM_CENTER 0.25f
 
 static const uint8_t LIMIT_PINS[] = {LL_LIMIT, LR_LIMIT, RR_LIMIT};
 
@@ -165,7 +167,6 @@ void move_until(uint slice, uint chan, uint8_t direction, float vel_mps,
   sleep_ms(50); // debounce
 }
 
-// do calibration and zeroing
 void calibrate() {
   is_calibrating = true;
   critical_fault = false;
@@ -199,36 +200,32 @@ void calibrate() {
 
   // compute steps/meter
   const float rail_length = 1.2192f; // meters
-  steps_per_meter_l = float(left_max) / rail_length;
-  steps_per_meter_r = float(right_max) / rail_length;
+  steps_per_meter_l = float(left_max) / (rail_length - HAND_WIDTH*2);
+  steps_per_meter_r = float(right_max) / (rail_length - HAND_WIDTH*2);
   printf("Calibrated!\nL: %f steps_per_meter, R: %f steps_per_meter\n",
          steps_per_meter_l, steps_per_meter_r);
 
   // 6. move to home offsets (+-0.3 m from center) and zero-counters
   const float half = rail_length / 2.0f;
-  const float offset = 0.3f;
 
-  {
-    step_count_l = 0;
-    uint32_t steps = uint32_t((half - offset) * steps_per_meter_l);
-    set_motor_pwm(pwm_slice_l, pwm_chan_l, CW, CALIB_SPEED_MPS);
-    while (uint64_t(step_count_l) < steps) {
-      tight_loop_contents();
-    }
-    set_motor_pwm(pwm_slice_l, pwm_chan_l, 0.0f, 0.0f);
-    step_count_l = 0; // zero position
+  step_count_l = 0;
+  uint32_t steps_l = uint32_t((half - HOME_FROM_CENTER - HAND_WIDTH/2) * steps_per_meter_l);
+  set_motor_pwm(pwm_slice_l, pwm_chan_l, CW, CALIB_SPEED_MPS);
+  while (uint64_t(step_count_l) < steps_l) {
+    tight_loop_contents();
+  }
+  set_motor_pwm(pwm_slice_l, pwm_chan_l, 0.0f, 0.0f);
+  step_count_l = 0; // zero position
+
+  step_count_r = 0;
+  int32_t steps_r = -1 * uint32_t((half - HOME_FROM_CENTER - HAND_WIDTH/2) * steps_per_meter_r);
+  set_motor_pwm(pwm_slice_r, pwm_chan_r, CCW, CALIB_SPEED_MPS);
+  while (step_count_r > steps_r) {
+    tight_loop_contents();
   }
 
-  {
-    step_count_r = 0;
-    int32_t steps = -1 * uint32_t((half - offset) * steps_per_meter_r);
-    set_motor_pwm(pwm_slice_r, pwm_chan_r, CCW, CALIB_SPEED_MPS);
-    while (step_count_r > steps) {
-      tight_loop_contents();
-    }
-    set_motor_pwm(pwm_slice_r, pwm_chan_r, 0.0f, 0.0f);
-    step_count_r = 0; // zero position
-  }
+  set_motor_pwm(pwm_slice_r, pwm_chan_r, 0.0f, 0.0f);
+  step_count_r = 0; // zero position
 
   printf("Zeroing complete. Home positions set.\n");
   is_calibrating = false;
