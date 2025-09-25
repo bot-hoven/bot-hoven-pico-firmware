@@ -78,7 +78,6 @@ void __time_critical_func(on_pwm_wrap)() {
 
 // stop motors if not calibrating
 void limit_switch_handler(uint gpio, uint32_t events) {
-  printf("LIMIT SWITCH PRESSED on pin %u\n", gpio);
   if (!is_calibrating) {
     pwm_set_enabled(pwm_slice_l, false);
     pwm_set_enabled(pwm_slice_r, false);
@@ -146,7 +145,6 @@ void set_motor_pwm(uint slice, uint chan, uint8_t dir, float vel_mps) {
                (is_calibrating ? CALIB_STEPS_PER_METER : steps_per_meter);
 
   if (freq > 0.0f && !critical_fault) {
-    printf("clock hz: %u\n", clock_get_hz(clk_sys));
     float div = float(clock_get_hz(clk_sys)) / (freq * (PWM_WRAP + 1));
     div = std::max(0.0f, std::min(255.0f, div));
     pwm_set_clkdiv(slice, div);
@@ -174,36 +172,31 @@ void calibrate() {
   sleep_ms(100);
 
   // 1. bring left to LL, right to RR
-  printf("1) Homing ends...\n");
   move_until(pwm_slice_l, pwm_chan_l, CCW, CALIB_SPEED_MPS, LL_LIMIT);
   move_until(pwm_slice_r, pwm_chan_r, CW, CALIB_SPEED_MPS, RR_LIMIT);
 
   // 2. measure left full travel
-  printf("2) Measuring left travel...\n");
   step_count_l = 0;
   move_until(pwm_slice_l, pwm_chan_l, CW, CALIB_SPEED_MPS, LR_LIMIT);
   int64_t left_max = abs(step_count_l);
 
   // 3. return left to LL
-  printf("3) Returning left home...\n");
   move_until(pwm_slice_l, pwm_chan_l, CCW, CALIB_SPEED_MPS, LL_LIMIT);
 
   // 4. measure right full travel
-  printf("4) Measuring right travel...\n");
   step_count_r = 0;
   move_until(pwm_slice_r, pwm_chan_r, CCW, CALIB_SPEED_MPS, LR_LIMIT);
   int64_t right_max = abs(step_count_r);
 
   // 5. return right to RR
-  printf("5) Returning right home...\n");
   move_until(pwm_slice_r, pwm_chan_r, CW, CALIB_SPEED_MPS, RR_LIMIT);
 
   // compute steps/meter
   const float rail_length = 1.2192f; // meters
   steps_per_meter_l = float(left_max) / (rail_length - HAND_WIDTH*2);
   steps_per_meter_r = float(right_max) / (rail_length - HAND_WIDTH*2);
-  printf("Calibrated!\nL: %f steps_per_meter, R: %f steps_per_meter\n",
-         steps_per_meter_l, steps_per_meter_r);
+  // printf("Calibrated!\nL: %f steps_per_meter, R: %f steps_per_meter\n",
+  //       steps_per_meter_l, steps_per_meter_r);
 
   // 6. move to home offsets (+-0.3 m from center) and zero-counters
   const float half = rail_length / 2.0f;
@@ -227,7 +220,6 @@ void calibrate() {
   set_motor_pwm(pwm_slice_r, pwm_chan_r, 0.0f, 0.0f);
   step_count_r = 0; // zero position
 
-  printf("Zeroing complete. Home positions set.\n");
   is_calibrating = false;
 }
 
@@ -245,7 +237,6 @@ int main() {
   init_hardware();
   init_limit_switches();
 
-  printf("Starting calibration...");
   calibrate();
 
   sleep_ms(1000);
